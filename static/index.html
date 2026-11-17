@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="utf-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:">
   <title>WindowsTVUI</title>
   <link rel="stylesheet" href="style.css">
 </head>
@@ -11,6 +11,14 @@
   <div id="grid"></div>
   <div id="toast"></div>
   <div class="hint">Arrows: move &nbsp;·&nbsp; Enter: launch &nbsp;·&nbsp; Esc: exit</div>
+  <div class="pairing">
+    <img id="pair-qr" alt="Remote QR code">
+    <div class="pair-text">
+      <div class="pair-title">Phone remote</div>
+      <div class="pair-url" id="pair-url"></div>
+      <div class="pair-pin">PIN <span id="pair-pin"></span></div>
+    </div>
+  </div>
   <script src="../dist/renderer.js"></script>
 </body>
 </html>

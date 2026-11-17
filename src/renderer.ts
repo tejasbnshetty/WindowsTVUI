@@ -1,8 +1,11 @@
 // Plain script (no imports/exports) so it loads directly in the page.
 interface TileView { id: string; label: string; color?: string }
+interface RemoteInfo { url?: string | null; pin?: string; qr?: string | null; error?: string }
 interface TvApi {
   getTiles(): Promise<TileView[]>;
   launch(id: string): Promise<{ ok: boolean; error?: string }>;
+  getRemoteInfo(): Promise<RemoteInfo>;
+  onNav(cb: (action: string) => void): void;
   quit(): void;
 }
 interface Window { tv: TvApi }
@@ -42,12 +45,14 @@ interface Window { tv: TvApi }
   }
 
   async function launch() {
+    if (!tiles.length) return;
     const res = await window.tv.launch(tiles[current].id);
     if (!res.ok) showToast(res.error ?? "Launch failed");
   }
 
   // Spatial navigation: nearest tile in the pressed direction.
   function move(dx: number, dy: number) {
+    if (!els.length) return;
     const c = els[current].getBoundingClientRect();
     const cx = c.left + c.width / 2, cy = c.top + c.height / 2;
     let best = -1, bestScore = Infinity;
@@ -64,18 +69,46 @@ interface Window { tv: TvApi }
     if (best >= 0) focus(best);
   }
 
-  window.addEventListener("keydown", (e) => {
-    switch (e.key) {
-      case "ArrowLeft": move(-1, 0); break;
-      case "ArrowRight": move(1, 0); break;
-      case "ArrowUp": move(0, -1); break;
-      case "ArrowDown": move(0, 1); break;
-      case "Enter": launch(); break;
-      case "Escape": window.tv.quit(); break;
-      default: return;
+  // Shared by the keyboard and the phone remote.
+  function handleAction(action: string): boolean {
+    switch (action) {
+      case "left": move(-1, 0); return true;
+      case "right": move(1, 0); return true;
+      case "up": move(0, -1); return true;
+      case "down": move(0, 1); return true;
+      case "ok": launch(); return true;
+      case "back":
+      case "home": if (els.length) focus(0); return true;
+      default: return false;
     }
-    e.preventDefault();
+  }
+
+  const KEYS: Record<string, string> = {
+    ArrowLeft: "left", ArrowRight: "right", ArrowUp: "up", ArrowDown: "down", Enter: "ok",
+  };
+
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { window.tv.quit(); e.preventDefault(); return; }
+    const action = KEYS[e.key];
+    if (action && handleAction(action)) e.preventDefault();
   });
+
+  window.tv.onNav((action) => { handleAction(action); });
+
+  // Pairing panel (bottom-right): URL, QR code, PIN.
+  const info = await window.tv.getRemoteInfo();
+  const urlEl = document.getElementById("pair-url")!;
+  const pinEl = document.getElementById("pair-pin")!;
+  const qrEl = document.getElementById("pair-qr") as HTMLImageElement;
+  if (info.error) {
+    urlEl.textContent = info.error;
+    pinEl.parentElement!.hidden = true;
+    qrEl.hidden = true;
+  } else {
+    urlEl.textContent = info.url ?? "No network connection";
+    pinEl.textContent = info.pin ?? "";
+    if (info.qr) qrEl.src = info.qr; else qrEl.hidden = true;
+  }
 
   if (els.length) focus(0);
 })();

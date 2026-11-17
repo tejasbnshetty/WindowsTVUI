@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="TV Remote">
+  <meta name="theme-color" content="#0b0d12">
+  <meta name="format-detection" content="telephone=no">
+  <title>TV Remote</title>
+  <link rel="stylesheet" href="/remote.css">
+</head>
+<body>
+  <header>
+    <div id="status" class="status off"><i></i><span id="status-text">Disconnected</span></div>
+  </header>
+
+  <main id="pair-view" hidden>
+    <form id="pair-form" autocomplete="off">
+      <h1>Pair remote</h1>
+      <p>Enter the 6-digit PIN shown on the TV.</p>
+      <input id="pin" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="off" autocorrect="off" placeholder="000000" aria-label="PIN">
+      <button id="pair-btn" type="submit">Connect</button>
+      <p id="pair-msg" role="alert"></p>
+    </form>
+  </main>
+
+  <main id="remote-view" hidden>
+    <div class="dpad">
+      <button class="key up" data-action="up" aria-label="Up">
+        <svg viewBox="0 0 24 24"><path d="M6 15l6-6 6 6"/></svg>
+      </button>
+      <button class="key left" data-action="left" aria-label="Left">
+        <svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg>
+      </button>
+      <button class="key ok" data-action="ok" aria-label="OK">OK</button>
+      <button class="key right" data-action="right" aria-label="Right">
+        <svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>
+      </button>
+      <button class="key down" data-action="down" aria-label="Down">
+        <svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>
+      </button>
+    </div>
+    <div class="row">
+      <button class="key wide" data-action="back">Back</button>
+      <button class="key wide" data-action="home">Home</button>
+    </div>
+  </main>
+
+  <script src="/remote.js"></script>
+</body>
+</html>
