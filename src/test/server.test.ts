@@ -398,3 +398,33 @@ test("a busy port rejects with EADDRINUSE (the app turns this into an on-screen 
     await new Promise<void>((r) => blocker.close(() => r()));
   }
 });
+
+// ---------------------------------------------------------------------------
+// M6: connected phones (drives the launcher's "Waiting for your phone…" chip)
+// ---------------------------------------------------------------------------
+
+test("connectedCount() and onConnectionsChange follow phones as they connect and disconnect", async () => {
+  const counts: number[] = [];
+  const { server } = await start({ onConnectionsChange: (n) => counts.push(n) });
+  const token = await pairDevice(server);
+  assert.equal(server.connectedCount(), 0);
+  const a = await openSocket(server.port, token);
+  const b = await openSocket(server.port, token);
+  await sleep(150);
+  assert.equal(server.connectedCount(), 2);
+  a.close();
+  await sleep(250);
+  assert.equal(server.connectedCount(), 1);
+  b.terminate();
+  await sleep(250);
+  assert.equal(server.connectedCount(), 0);
+  assert.deepEqual(counts, [1, 2, 1, 0]);
+});
+
+test("a rejected (unauthenticated) socket never counts as a connected phone", async () => {
+  const counts: number[] = [];
+  const { server } = await start({ onConnectionsChange: (n) => counts.push(n) });
+  await assert.rejects(openSocket(server.port, "f".repeat(64)));
+  assert.equal(server.connectedCount(), 0);
+  assert.deepEqual(counts, []);
+});

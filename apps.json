@@ -1,0 +1,31 @@
+{
+  "apps": [
+    { "id": "netflix",    "name": "Netflix",         "category": "Streaming", "launch": "url", "target": "https://www.netflix.com",            "color": "#E50914", "icon": "netflix" },
+    { "id": "youtube",    "name": "YouTube",         "category": "Streaming", "launch": "url", "target": "https://www.youtube.com/tv",         "color": "#FF0000", "icon": "youtube" },
+    { "id": "disneyplus", "name": "Disney+",         "category": "Streaming", "launch": "url", "target": "https://www.disneyplus.com",         "color": "#113CCF" },
+    { "id": "primevideo", "name": "Prime Video",     "category": "Streaming", "launch": "url", "target": "https://www.primevideo.com",         "color": "#00A8E1" },
+    { "id": "appletv",    "name": "Apple TV",        "category": "Streaming", "launch": "url", "target": "https://tv.apple.com",               "color": "#2B2B30", "icon": "appletv" },
+    { "id": "max",        "name": "Max",             "category": "Streaming", "launch": "url", "target": "https://play.max.com",               "color": "#002BE7", "icon": "max" },
+    { "id": "paramount",  "name": "Paramount+",      "category": "Streaming", "launch": "url", "target": "https://www.paramountplus.com",      "color": "#0064FF", "icon": "paramountplus" },
+    { "id": "stan",       "name": "Stan",            "category": "Streaming", "launch": "url", "target": "https://www.stan.com.au",            "color": "#0072FF" },
+    { "id": "binge",      "name": "Binge",           "category": "Streaming", "launch": "url", "target": "https://binge.com.au",               "color": "#6D28D9" },
+    { "id": "kayo",       "name": "Kayo",            "category": "Streaming", "launch": "url", "target": "https://kayosports.com.au",          "color": "#0E9F6E" },
+    { "id": "abciview",   "name": "ABC iview",       "category": "Streaming", "launch": "url", "target": "https://iview.abc.net.au",           "color": "#00A06B" },
+    { "id": "sbs",        "name": "SBS On Demand",   "category": "Streaming", "launch": "url", "target": "https://www.sbs.com.au/ondemand",    "color": "#0B4EA2" },
+    { "id": "9now",       "name": "9Now",            "category": "Streaming", "launch": "url", "target": "https://www.9now.com.au",            "color": "#0A66C2" },
+    { "id": "7plus",      "name": "7plus",           "category": "Streaming", "launch": "url", "target": "https://7plus.com.au",               "color": "#D7282F" },
+    { "id": "10",         "name": "10",              "category": "Streaming", "launch": "url", "target": "https://10.com.au",                  "color": "#00A0DD" },
+
+    { "id": "spotify",    "name": "Spotify",         "category": "Music",     "launch": "url", "target": "https://open.spotify.com",           "color": "#1ED760", "icon": "spotify" },
+    { "id": "applemusic", "name": "Apple Music",     "category": "Music",     "launch": "url", "target": "https://music.apple.com",            "color": "#FA243C", "icon": "applemusic" },
+    { "id": "ytmusic",    "name": "YouTube Music",   "category": "Music",     "launch": "url", "target": "https://music.youtube.com",          "color": "#FF0000", "icon": "youtubemusic" },
+
+    { "id": "vlc",        "name": "VLC",             "category": "Local & Media", "launch": "exe", "target": "%ProgramFiles%\\VideoLAN\\VLC\\vlc.exe",                                  "color": "#FF8800", "icon": "vlcmediaplayer" },
+    { "id": "stremio",    "name": "Stremio",         "category": "Local & Media", "launch": "exe", "target": "%LOCALAPPDATA%\\Programs\\LNV\\Stremio-4\\stremio.exe",                    "color": "#685CEE", "icon": "stremio" },
+    { "id": "plex",       "name": "Plex",            "category": "Local & Media", "launch": "exe", "target": "%ProgramFiles%\\Plex\\Plex\\Plex.exe",                                    "color": "#EBAF00", "icon": "plex" },
+    { "id": "jellyfin",   "name": "Jellyfin",        "category": "Local & Media", "launch": "exe", "target": "%ProgramFiles%\\Jellyfin\\Jellyfin Media Player\\JellyfinMediaPlayer.exe", "color": "#00A4DC", "icon": "jellyfin" },
+    { "id": "kodi",       "name": "Kodi",            "category": "Local & Media", "launch": "exe", "target": "%ProgramFiles%\\Kodi\\kodi.exe",                                          "color": "#17B2E7", "icon": "kodi" },
+
+    { "id": "browser",    "name": "Browser",         "category": "Apps",      "launch": "url", "target": "https://www.google.com",             "color": "#3B82F6" }
+  ]
+}

@@ -1,10 +1,11 @@
-import { app, BrowserWindow, ipcMain, Menu, powerMonitor, powerSaveBlocker, screen, shell } from "electron";
-import { spawn } from "child_process";
+import { app, BrowserWindow, ipcMain, Menu, net, powerMonitor, powerSaveBlocker, protocol as electronProtocol, screen, shell } from "electron";
+import { execFile, spawn } from "child_process";
 import * as fs from "fs";
 import * as http from "http";
 import * as path from "path";
+import { pathToFileURL } from "url";
 import * as QRCode from "qrcode";
-import { startRemoteServer, RemoteServer, PairingState } from "./server";
+import { startRemoteServer, RemoteServer } from "./server";
 import { Command, ServerMessage, StateMessage } from "./protocol";
 import { Input, VK, createInput, createWin32Backend } from "./input";
 import { dispatchInput } from "./dispatch";
@@ -18,46 +19,47 @@ import { PowerGuard, createPowerGuard } from "./power";
 import { createNetworkMonitor, getLanInfo, NetworkMonitor } from "./network";
 import { MDNS_HOST, MdnsAdvertiser, createBonjourFactory, createMdnsAdvertiser } from "./mdns";
 import { createLogger } from "./logger";
-import { migrateLegacyData, prepareConfig } from "./config";
+import { migrateLegacyData, prepareConfig, prepareUserFile } from "./config";
 import { createRecovery } from "./recovery";
-
-interface Tile {
-  id: string;
-  label: string;
-  color?: string;
-  type: "url" | "exe";
-  target: string;
-}
+import { AppDef, installedState, launchApp, loadApps } from "./apps";
+import { createIconLookup, loadIconFile } from "./icons";
+import { customImageUrl, ensureDir, findCustomImage, listWallpapers, resolveCustom, resolveWallpaper } from "./wallpapers";
+import type { AboutInfo, DeviceView, LaunchResult, LauncherInfo, PublicApp } from "./ui/types";
 
 interface Config {
   port?: number;
   /** "auto" (default: the display the launcher started on), "primary", a display id, or part of a display's name. */
   display?: DisplayConfig;
-  tiles: Tile[];
+  /** "default" (the system default browser), "chrome" | "edge" | "firefox" | "brave", or the path of a browser .exe. */
+  browser?: string;
 }
 
 const DEFAULT_PORT = 8787;
 const APP_ID = "com.couchui.app";
+/** A pairing screen / window stays open for 2 minutes when a phone is added on purpose. */
+const PAIRING_WINDOW_MS = 120_000;
+
+// Must happen before the app is ready: lets the page load wallpapers and custom logos from app data (couch://).
+electronProtocol.registerSchemesAsPrivileged([
+  { scheme: "couch", privileges: { standard: true, secure: true, supportFetchAPI: true } },
+]);
 
 /** Set at startup: the project's config.json in development, %APPDATA%\Couch UI\config.json when installed. */
 let configFile = path.join(__dirname, "..", "config.json");
 
 function loadConfig(): Config {
-  // Windows editors (Notepad, PowerShell) often save UTF-8 with a BOM, which JSON.parse rejects.
-  return JSON.parse(fs.readFileSync(configFile, "utf8").replace(/^﻿/, "")) as Config;
-}
-
-function loadTiles(): Tile[] {
-  return loadConfig().tiles;
+  try {
+    // Windows editors (Notepad, PowerShell) often save UTF-8 with a BOM, which JSON.parse rejects.
+    return JSON.parse(fs.readFileSync(configFile, "utf8").replace(/^﻿/, "")) as Config;
+  } catch (err) {
+    console.error(`Could not read ${configFile}: ${(err as Error).message}`);
+    return {};
+  }
 }
 
 function configuredPort(): number {
-  try {
-    const p = loadConfig().port;
-    return Number.isInteger(p) && p! > 0 && p! < 65536 ? p! : DEFAULT_PORT;
-  } catch {
-    return DEFAULT_PORT;
-  }
+  const p = loadConfig().port;
+  return Number.isInteger(p) && p! > 0 && p! < 65536 ? p! : DEFAULT_PORT;
 }
 
 function describeStartError(err: unknown, port: number): string {
@@ -71,15 +73,24 @@ function describeStartError(err: unknown, port: number): string {
   return `The phone remote could not start: ${(err as Error)?.message ?? String(err)}`;
 }
 
-/** What the launcher panel shows. Never contains a token; the PIN is only present while pairing is open. */
-interface LauncherInfo {
-  error: string | null;
-  url: string | null;
-  mdnsUrl: string | null;
-  qr: string | null;
-  pairing: PairingState;
-  devices: number;
-  network: { online: boolean; label: string | null; ip: string | null };
+const spawnDetached = (file: string, args: string[]): Promise<void> =>
+  new Promise((resolve, reject) => {
+    const child = spawn(file, args, { detached: true, stdio: "ignore" });
+    child.once("error", reject);
+    child.once("spawn", () => { child.unref(); resolve(); });
+  });
+
+/** AppIDs of the installed Microsoft Store apps (cached for a minute), or null if PowerShell could not list them. */
+let storeCache: { at: number; ids: Set<string> | null } | null = null;
+function listStoreApps(): Promise<Set<string> | null> {
+  if (storeCache && Date.now() - storeCache.at < 60_000) return Promise.resolve(storeCache.ids);
+  return new Promise((resolve) => {
+    execFile("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", "Get-StartApps | ForEach-Object { $_.AppID }"], { timeout: 12_000, windowsHide: true }, (err, stdout) => {
+      const ids = err ? null : new Set(String(stdout).split(/\r?\n/).map((l) => l.trim()).filter(Boolean));
+      storeCache = { at: Date.now(), ids };
+      resolve(ids);
+    });
+  });
 }
 
 function startApp(): void {
@@ -109,11 +120,62 @@ function startApp(): void {
     const copied = migrateLegacyData(userData, path.join(app.getPath("appData"), "windows-tv-ui"));
     if (copied.length) console.log(`Carried over from the old app-data folder: ${copied.join(", ")}`);
   }
-  configFile = prepareConfig({ packaged: app.isPackaged, bundledConfig: path.join(__dirname, "..", "config.json"), userData });
+  const bundledDir = path.join(__dirname, "..");
+  configFile = prepareConfig({ packaged: app.isPackaged, bundledConfig: path.join(bundledDir, "config.json"), userData });
+  const appsFile = prepareUserFile("apps.json", { packaged: app.isPackaged, bundledDir, userData });
+  const wallpapersDir = path.join(userData, "wallpapers");
+  const customDir = path.join(userData, "assets", "custom");
+  ensureDir(wallpapersDir);
+  ensureDir(customDir);
   console.log(`Couch UI ${app.getVersion()} starting (${app.isPackaged ? "installed/portable" : "development"}); config: ${configFile}`);
+
+  const icons = createIconLookup(() => loadIconFile(path.join(bundledDir, "build", "simple-icons.json")));
 
   function alive(): BrowserWindow | null {
     return win && !win.isDestroyed() ? win : null;
+  }
+
+  // ---------- apps ----------
+  function readApps(): AppDef[] {
+    const parsed = loadApps(appsFile);
+    for (const p of parsed.problems) console.warn(`apps.json: ${p}`);
+    return parsed.apps;
+  }
+
+  function toPublic(a: AppDef): PublicApp {
+    const custom = findCustomImage(customDir, a.id, a.image);
+    return {
+      id: a.id,
+      name: a.name,
+      category: a.category,
+      type: a.launch,
+      color: a.color,
+      iconPath: custom ? null : icons.path(a.icon),
+      imageUrl: custom ? customImageUrl(custom) : null,
+      installed: installedState(a, { exists: fs.existsSync, env: process.env }),
+    };
+  }
+
+  async function launchById(id: unknown): Promise<LaunchResult> {
+    const def = typeof id === "string" ? readApps().find((a) => a.id === id) : undefined;
+    if (!def) return { ok: false, code: "unknown-app", message: "That app is no longer in apps.json" };
+    const outcome = await launchApp(def, {
+      exists: fs.existsSync,
+      env: process.env,
+      openExternal: (url) => shell.openExternal(url),
+      spawnDetached,
+      listStoreApps,
+      browser: loadConfig().browser,
+    });
+    if (!outcome.ok) {
+      console.warn(`Launch ${def.id} failed (${outcome.code}): ${outcome.message}`);
+      return outcome;
+    }
+    settings?.setUi({ lastLaunchedId: def.id });
+    stepAside();
+    // Lets the phone switch itself to Trackpad mode after a browser launch.
+    remote?.broadcast({ type: "launched", kind: def.launch === "url" ? "browser" : "app" });
+    return { ok: true, lastLaunchedId: def.id };
   }
 
   // ---------- display helpers ----------
@@ -138,7 +200,7 @@ function startApp(): void {
       icon: path.join(__dirname, "..", "build", "icon.png"),
       fullscreen: true,
       frame: false,
-      backgroundColor: "#0b0d12",
+      backgroundColor: "#05070c",
       autoHideMenuBar: true,
       webPreferences: {
         preload: path.join(__dirname, "preload.js"),
@@ -148,7 +210,7 @@ function startApp(): void {
       },
     });
     win.setMenuBarVisibility(false);
-    win.loadFile(path.join(__dirname, "..", "static", "index.html"));
+    win.loadFile(path.join(__dirname, "..", "ui-dist", "index.html"));
   }
 
   let bringing: Promise<{ ok: boolean; method: string }> | null = null;
@@ -207,7 +269,7 @@ function startApp(): void {
     if (!url) return null;
     if (qrCache?.url === url) return qrCache.dataUrl;
     try {
-      const dataUrl = await QRCode.toDataURL(url, { margin: 2, width: 320, errorCorrectionLevel: "M" });
+      const dataUrl = await QRCode.toDataURL(url, { margin: 2, width: 480, errorCorrectionLevel: "M" });
       qrCache = { url, dataUrl };
       return dataUrl;
     } catch (err) {
@@ -228,6 +290,7 @@ function startApp(): void {
       qr: await qrFor(url),
       pairing: remote?.getPairing() ?? { open: false, pin: null, expiresAt: null },
       devices: remote?.deviceCount() ?? 0,
+      connected: remote?.connectedCount() ?? 0,
       network: { online: !!lan, label: lan?.label ?? null, ip: lan?.ip ?? null },
     };
   }
@@ -257,6 +320,8 @@ function startApp(): void {
         deviceStore: deviceStore ?? undefined,
         getState: buildState,
         onPairingChange: () => pushInfo(),
+        onConnectionsChange: () => pushInfo(),
+        pairingWindowMs: PAIRING_WINDOW_MS,
       });
       remoteError = null;
       console.log(`Remote server listening on port ${remote.port}`);
@@ -348,34 +413,33 @@ function startApp(): void {
     }
   }
 
-  // ---------- IPC (launcher renderer) ----------
-  // Renderer only gets labels/colors; it launches by id, never by arbitrary target.
-  ipcMain.handle("tiles:get", () => loadTiles().map(({ id, label, color }) => ({ id, label, color })));
+  // ---------- IPC (launcher UI). Everything from the renderer is validated here. ----------
+  ipcMain.handle("apps:list", (): PublicApp[] => readApps().map(toPublic));
+  ipcMain.handle("apps:launch", (_e, id: unknown) => launchById(id));
+  ipcMain.handle("ui:get", () => settings?.get().ui);
+  ipcMain.handle("ui:set", (_e, patch: unknown) => settings?.setUi(patch));
+  ipcMain.handle("wallpapers:list", () => listWallpapers(wallpapersDir));
   ipcMain.handle("remote:info", () => buildInfo());
+  ipcMain.handle("devices:list", (): DeviceView[] =>
+    (deviceStore?.list() ?? []).map((d) => ({ label: d.label, createdAt: d.createdAt })).sort((a, b) => a.createdAt - b.createdAt));
+  ipcMain.handle("devices:forget", () => { remote?.forgetAllDevices(); });
   ipcMain.on("pairing:open", () => { remote?.openPairing(); });
-
-  ipcMain.handle("tiles:launch", async (_e, id: string) => {
-    const tile = loadTiles().find((t) => t.id === id);
-    if (!tile) return { ok: false, error: "Unknown tile" };
-    try {
-      if (tile.type === "url") {
-        if (!/^https?:\/\//i.test(tile.target)) return { ok: false, error: "Only http(s) URLs allowed" };
-        await shell.openExternal(tile.target);
-      } else {
-        if (!fs.existsSync(tile.target)) return { ok: false, error: `Not found: ${tile.target}` };
-        const child = spawn(tile.target, [], { detached: true, stdio: "ignore" });
-        child.on("error", () => {});
-        child.unref();
-      }
-      stepAside();
-      // Lets the phone switch itself to Trackpad mode after a browser launch.
-      remote?.broadcast({ type: "launched", kind: tile.type === "url" ? "browser" : "app" });
-      return { ok: true };
-    } catch (err) {
-      return { ok: false, error: String(err) };
-    }
+  ipcMain.on("pairing:close", () => { remote?.closePairing(); });
+  ipcMain.handle("display:list", () => manager?.views() ?? []);
+  ipcMain.handle("display:choose", (_e, id: unknown) => {
+    if (id !== null && !(typeof id === "number" && Number.isSafeInteger(id))) return false;
+    const ok = manager?.choose(id as number | null) ?? false;
+    remote?.broadcastState();
+    return ok;
   });
-
+  ipcMain.handle("about:get", (): AboutInfo => ({
+    version: app.getVersion(), packaged: app.isPackaged, dataDir: userData, configFile, appsFile, wallpapersDir,
+  }));
+  ipcMain.on("folder:open", (_e, which: unknown) => {
+    // Only two fixed folders can be opened; the renderer never supplies a path.
+    if (which === "wallpapers") void shell.openPath(wallpapersDir);
+    else if (which === "data") void shell.openPath(userData);
+  });
   ipcMain.on("app:quit", () => app.quit());
 
   // ---------- lifecycle ----------
@@ -387,6 +451,16 @@ function startApp(): void {
   async function init(): Promise<void> {
     Menu.setApplicationMenu(null); // no menu: Alt/Ctrl+W from the phone must never act on the launcher itself
     app.setAppUserModelId(APP_ID);
+
+    // couch://wallpaper/<file> and couch://asset/<file>: only plain image file names inside the two app-data folders.
+    electronProtocol.handle("couch", (req) => {
+      const url = new URL(req.url);
+      const file = url.hostname === "wallpaper" ? resolveWallpaper(wallpapersDir, url.pathname.slice(1))
+        : url.hostname === "asset" ? resolveCustom(customDir, url.pathname.slice(1))
+        : null;
+      if (!file || !fs.existsSync(file)) return new Response("Not found", { status: 404 });
+      return net.fetch(pathToFileURL(file).toString());
+    });
 
     settings = createSettingsStore(path.join(userData, "settings.json"));
     deviceStore = createFileDeviceStore(path.join(userData, "devices.json"));

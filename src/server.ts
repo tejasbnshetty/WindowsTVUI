@@ -38,6 +38,8 @@ export interface RemoteServer {
   /** Forgets every remembered phone, disconnects them and re-opens pairing. */
   forgetAllDevices(): void;
   deviceCount(): number;
+  /** Phones with an open WebSocket right now. */
+  connectedCount(): number;
   broadcast(msg: ServerMessage): void;
   broadcastState(): void;
   /** Stops listening, drops all sockets (releasing held buttons) and resolves once the port is free. */
@@ -54,6 +56,8 @@ export interface RemoteOptions {
   /** Sent to each socket when it connects, and on broadcastState(). */
   getState?: () => StateMessage;
   onPairingChange?: (state: PairingState) => void;
+  /** Called whenever a phone connects or disconnects, with the new number of connected phones. */
+  onConnectionsChange?: (count: number) => void;
   /** How long a user-requested pairing window stays open. */
   pairingWindowMs?: number;
 }
@@ -330,7 +334,8 @@ export function startRemoteServer(opts: RemoteOptions): Promise<RemoteServer> {
     held.set(ws, new Set());
     ws.on("pong", () => alive.set(ws, true));
     ws.on("error", () => {});
-    ws.on("close", () => releaseHeld(ws));
+    ws.on("close", () => { releaseHeld(ws); opts.onConnectionsChange?.(wss.clients.size); });
+    opts.onConnectionsChange?.(wss.clients.size);
     const reply = (msg: ServerMessage) => sendTo(ws, msg);
     if (opts.getState) reply(opts.getState());
 
@@ -435,6 +440,7 @@ export function startRemoteServer(opts: RemoteOptions): Promise<RemoteServer> {
           openPairing();
         },
         deviceCount: () => store.count(),
+        connectedCount: () => wss.clients.size,
         broadcast,
         broadcastState,
         close,

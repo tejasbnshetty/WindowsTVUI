@@ -7,13 +7,14 @@
   "main": "dist/main.js",
   "private": true,
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node scripts/build-icons.js && vite build",
     "test": "tsc && node --test dist/test/",
-    "start": "tsc && node scripts/run.js",
+    "start": "npm run build && node scripts/run.js",
     "dev": "tsc --watch --preserveWatchOutput",
+    "ui:dev": "vite",
     "icon": "node scripts/make-icon.js",
-    "pack": "tsc && electron-builder --dir --win --x64",
-    "dist": "tsc && electron-builder --win nsis portable --x64"
+    "pack": "npm run build && electron-builder --dir --win --x64",
+    "dist": "npm run build && electron-builder --win nsis portable --x64"
   },
   "devDependencies": {
     "@types/node": "^26.6.6",
@@ -21,11 +22,15 @@
     "@types/ws": "^8.18.2",
     "electron": "^45.3.3",
     "electron-builder": "^26.18.0",
-    "typescript": "^7.0.2"
+    "preact-render-to-string": "^6.8.3",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.8",
+    "simple-icons": "^16.38.0"
   },
   "dependencies": {
     "bonjour-service": "^1.4.4",
     "koffi": "^3.3.8",
+    "preact": "^11.2.0",
     "qrcode": "^1.5.4",
     "ws": "^8.23.0"
   },
@@ -40,11 +45,14 @@
     "files": [
       "dist/**/*",
       "!dist/test/**",
-      "static/**/*",
+      "!dist/ui/**",
+      "ui-dist/**/*",
       "src/remote/index.html",
       "src/remote/remote.css",
       "config.json",
+      "apps.json",
       "build/icon.png",
+      "build/simple-icons.json",
       "package.json"
     ],
     "asar": true,
@@ -54,8 +62,18 @@
     "win": {
       "icon": "build/icon.ico",
       "target": [
-        { "target": "nsis", "arch": ["x64"] },
-        { "target": "portable", "arch": ["x64"] }
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
       ],
       "artifactName": "Couch-UI-${version}-${arch}.${ext}"
     },

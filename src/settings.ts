@@ -1,6 +1,8 @@
-// Small user settings that the remote can change (kept out of config.json, which the user edits by hand).
+// Small user settings that the remote / launcher can change (kept out of config.json, which the user edits by hand).
 import * as fs from "fs";
 import * as path from "path";
+import type { UiSettings } from "./ui/types";
+import { DEFAULT_UI, mergeUi, sanitizeUi } from "./uiSettings";
 
 export interface SavedDisplay {
   id: number;
@@ -12,11 +14,15 @@ export interface SavedDisplay {
 export interface Settings {
   /** Display chosen from the remote's Settings tab; null = use the default. */
   display: SavedDisplay | null;
+  /** Launcher preferences: wallpaper, screensaver, effects, last launched app. */
+  ui: UiSettings;
 }
 
 export interface SettingsStore {
   get(): Settings;
   setDisplay(d: SavedDisplay | null): void;
+  /** Merges a (validated) partial update and saves. Returns the new settings. */
+  setUi(patch: unknown): UiSettings;
 }
 
 function isSavedDisplay(v: unknown): v is SavedDisplay {
@@ -27,10 +33,13 @@ function isSavedDisplay(v: unknown): v is SavedDisplay {
 }
 
 export function createSettingsStore(file: string): SettingsStore {
-  let settings: Settings = { display: null };
+  let settings: Settings = { display: null, ui: DEFAULT_UI };
   try {
     const parsed = JSON.parse(fs.readFileSync(file, "utf8").replace(/^﻿/, ""));
-    if (isSavedDisplay(parsed?.display)) settings = { display: parsed.display };
+    settings = {
+      display: isSavedDisplay(parsed?.display) ? parsed.display : null,
+      ui: sanitizeUi(parsed?.ui),
+    };
   } catch {
     /* missing or unreadable: defaults */
   }
@@ -51,6 +60,11 @@ export function createSettingsStore(file: string): SettingsStore {
     setDisplay(d) {
       settings = { ...settings, display: d };
       save();
+    },
+    setUi(patch) {
+      settings = { ...settings, ui: mergeUi(settings.ui, patch) };
+      save();
+      return settings.ui;
     },
   };
 }

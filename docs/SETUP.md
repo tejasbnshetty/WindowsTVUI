@@ -6,8 +6,9 @@ Couch UI is a fullscreen launcher you show on a TV (HDMI) and control from an iP
 task, no background service, no tray icon and no watchdog. After you exit, nothing of it is left running.
 
 Contents: [Build](#1-build-the-installer) · [Install](#2-install) · [Portable](#3-portable-exe) · [Run](#4-run-and-pair) ·
-[Exit](#5-exit) · [Config, data, logs](#6-config-data-and-logs) · [Fixed IP](#7-reserve-a-fixed-ip-in-your-router) ·
-[Sleep](#8-keep-the-laptop-awake-while-it-runs) · [TV settings](#9-tv-settings) · [Troubleshooting](#10-troubleshooting)
+[Exit](#5-exit) · [Launcher, apps, wallpapers](#6-the-launcher-your-apps-wallpapers-and-screensaver) ·
+[Config, data, logs](#7-config-data-and-logs) · [Fixed IP](#8-reserve-a-fixed-ip-in-your-router) ·
+[Sleep](#9-keep-the-laptop-awake-while-it-runs) · [TV settings](#10-tv-settings) · [Troubleshooting](#11-troubleshooting)
 
 ---
 
@@ -53,7 +54,7 @@ Your Wi-Fi must be set to the **Private** profile (Settings → Network & intern
 *Network profile type: Private*). On a Public profile the rule does not apply and the phone will not connect.
 
 **Uninstall:** Settings → Apps → Couch UI → Uninstall. This removes the app, shortcuts and firewall rule. It keeps
-your data folder (see section 6) so a reinstall remembers your phones; delete that folder by hand to wipe everything.
+your data folder (see section 7) so a reinstall remembers your phones; delete that folder by hand to wipe everything.
 
 ## 3. Portable exe
 
@@ -74,16 +75,16 @@ Remove them later with `netsh advfirewall firewall delete rule name="Couch UI po
 ## 4. Run and pair
 
 1. Connect the laptop to the TV by HDMI and make sure the TV shows the laptop's screen (Win+P → *Extend* or
-   *Second screen only*; see section 9).
+   *Second screen only*; see section 10).
 2. Double-click **Couch UI** on the Desktop. The launcher goes fullscreen.
-3. In the bottom-right corner it shows the status line (*Wi-Fi connected*), the address, a QR code and a PIN:
+3. On the very first run it shows a full-screen **Connect your phone** page with a QR code, the address and a PIN:
    - `http://192.168.x.x:8787`, the address that always works, and
    - `http://couchui.local:8787`, a name that keeps working if the laptop's IP changes.
 4. On the iPhone (same Wi-Fi) scan the QR code or type either address in Safari, enter the PIN.
 5. Optional: Safari → Share → **Add to Home Screen** for a full-screen remote.
 
-The PIN and QR only show while pairing is open (first run, or after you press **P** on the laptop / tap
-*Pair new device* on an already-paired phone). Once a phone pairs they disappear, and that phone stays paired across
+The PIN and QR only show while pairing is open (first run, or for 2 minutes after you press **P** on the laptop, use
+**Settings → Devices → Pair new device**, or tap *Pair new device* on an already-paired phone). Once a phone pairs they disappear, and that phone stays paired across
 restarts. iOS may ask *"Allow … to find and connect to devices on your local network"*: allow it, it is needed for
 `couchui.local`.
 
@@ -98,15 +99,84 @@ keep-awake request):
 To confirm nothing is left running, open Task Manager and look for **Couch UI** (or run
 `tasklist /FI "IMAGENAME eq Couch UI.exe"`): after exit it lists nothing.
 
-## 6. Config, data and logs
+## 6. The launcher, your apps, wallpapers and screensaver
+
+![Home screen](screenshots/home.png)
+
+**Home.** Clock and date on the left; on the right the network status and a small phone indicator. Below is a hero
+banner with the app you opened last (with an **Open** button; a welcome banner until you have opened something), then rows:
+**Streaming**, **Music**, **Local & Media**, **Apps**. Use the arrow keys or the phone's D-pad: left/right move along a
+row (it scrolls to follow), up/down change row, and **up from the first row** reaches the hero. **OK** opens, **Back/Home**
+return to the first tile. The **Settings** tile is the last tile of the last row.
+
+**Apps are defined in `apps.json`** (next to `config.json`; the installed app seeds `%APPDATA%\Couch UI\apps.json` on first
+run and never overwrites your edits). Restart Couch UI after changing it.
+
+```jsonc
+{ "apps": [
+  { "id": "netflix", "name": "Netflix", "category": "Streaming", "launch": "url",
+    "target": "https://www.netflix.com", "color": "#E50914", "icon": "netflix" },
+  { "id": "vlc", "name": "VLC", "category": "Local & Media", "launch": "exe",
+    "target": "%ProgramFiles%\VideoLAN\VLC\vlc.exe", "color": "#FF8800", "icon": "vlcmediaplayer" },
+  { "id": "music", "name": "Apple Music", "category": "Music", "launch": "store-app",
+    "target": "AppleInc.AppleMusicWin_nzyj5cx40ttqa!App", "color": "#FA243C" }
+] }
+```
+
+| Field | Meaning |
+| --- | --- |
+| `id` | Unique, lower-case letters/digits/`-`/`_`. |
+| `name`, `category` | Shown on the tile / which row. `Streaming`, `Music`, `Local & Media`, `Apps` come first in that order; any other category becomes an extra row. |
+| `launch` | `url` opens in your browser; `exe` starts a program (`%ProgramFiles%`-style variables work); `store-app` starts a Microsoft Store app by its AppUserModelID (find it with `Get-StartApps` in PowerShell) or a protocol such as `ms-windows-store:`. |
+| `color` | Brand colour `#rrggbb`: the tile gradient. |
+| `icon` | Optional [simple-icons](https://simpleicons.org) slug. The logos are bundled with the app; nothing is downloaded. |
+| `image` | Optional file name in `assets\custom\` to use instead of the logo. |
+
+**Logos.** Brands simple-icons does not carry (Disney+, Prime Video, Stan, Binge, Kayo, ABC iview, SBS On Demand, 9Now,
+7plus, 10) get a generated bold name tile in the brand colour. To use a real logo instead, put an image in
+`%APPDATA%\Couch UI\assets\custom\` named after the app id (`stan.png`, `stan.svg`, `.jpg`, `.webp`), or point `image` at
+a file name. A wide logo with a transparent background works best.
+
+**Missing apps.** If a program is not installed the tile shows **Not installed** (dimmed) and opening it shows a clear
+message instead of failing. URL apps always open.
+
+**Browser.** URL apps open in your default browser. To force one, set `"browser"` in `config.json` to `"chrome"`, `"edge"`,
+`"firefox"`, `"brave"` or the full path of a browser `.exe`. If that browser is not installed, the default browser is used.
+
+**Wallpapers.** Four generated gradients are built in. Put your own `jpg`, `png` or `webp` pictures in
+`%APPDATA%\Couch UI\wallpapers\` (the folder is created for you; **Settings → Wallpaper → Open wallpapers folder** opens
+it). Choose one picture, or *Rotate* every 1–30 minutes. Nothing is downloaded.
+
+**Screensaver.** After 5 idle minutes (change or turn off in **Settings → Screensaver**) the launcher fades to a slow
+slideshow of your wallpaper pictures (the built-in gradients if you have none) with a large clock. It only runs while
+the launcher itself is showing, never while another app is in front. Any key, mouse movement or remote input wakes it,
+and **that first input does nothing else**.
+
+![Settings](screenshots/settings-display.png)
+
+**Settings** (arrow keys; Back returns): **Display** (move the launcher to another screen; *Reduce effects*),
+**Wallpaper**, **Screensaver**, **Devices** (paired phones, *Pair new device*, *Forget all devices*), **Add app** (coming in
+M7) and **About / Exit**. *Reduce effects* removes blur, glow and the Ken Burns zoom: switch it on if animations stutter
+on a slow GPU. The white focus ring is always drawn, whatever this setting.
+
+**Phones.** Until a phone has been paired, the launcher shows a full-screen **Connect your phone** page (QR code, address
+and PIN). Once phones are paired, there is no PIN or QR on the home screen, only a small *Waiting for your phone…* chip
+while none is connected. **Settings → Devices → Pair new device** (or **P** on the keyboard) shows the QR page for 2 minutes.
+
+![Connect your phone](screenshots/connect-phone.png)
+
+## 7. Config, data and logs
 
 Everything lives in `%APPDATA%\Couch UI\` (paste that into Explorer's address bar):
 
 | Path | Purpose |
 | --- | --- |
-| `config.json` | **Your settings.** Created on first run from the defaults; never overwritten by updates. |
+| `config.json` | **Your settings** (port, display, browser). Created on first run from the defaults; never overwritten by updates. |
+| `apps.json` | **Your apps** (section 6). Same rules as `config.json`. |
+| `wallpapers\` | Your wallpaper / screensaver pictures. |
+| `assets\custom\` | Optional custom logo images for apps. |
 | `devices.json` | Remembered phones (only hashes of their tokens, never the tokens). |
-| `settings.json` | The display chosen from the phone's Settings tab. |
+| `settings.json` | Choices made on the launcher: display, wallpaper, screensaver delay, reduce effects, last opened app. |
 | `logs\couch-ui.log` | Log file. Rotates at 1 MB and keeps the last 5 files (`couch-ui.1.log` … `couch-ui.4.log`). |
 
 Edit `config.json` with Notepad and restart Couch UI to apply:
@@ -115,10 +185,7 @@ Edit `config.json` with Notepad and restart Couch UI to apply:
 {
   "port": 8787,          // phone remote port
   "display": "auto",     // "auto" = the screen it started on, "primary", a display id, or part of a monitor's name
-  "tiles": [
-    { "id": "youtube", "label": "YouTube", "color": "#ef4444", "type": "url", "target": "https://www.youtube.com/tv" },
-    { "id": "vlc", "label": "VLC", "color": "#f97316", "type": "exe", "target": "C:\\Program Files\\VideoLAN\\VLC\\vlc.exe" }
-  ]
+  "browser": "default"   // "default", "chrome", "edge", "firefox", "brave" or the full path of a browser .exe
 }
 ```
 
@@ -127,7 +194,8 @@ Edit `config.json` with Notepad and restart Couch UI to apply:
 Logs never contain the PIN or any token. If something misbehaves, the newest lines of `couch-ui.log` are the first
 place to look.
 
-## 7. Reserve a fixed IP in your router
+## 8. Reserve a fixed IP in your router
+
 
 `couchui.local` already survives IP changes, but a fixed address makes the plain IP URL and bookmarks reliable too.
 This is called a **DHCP reservation** (or "static lease" / "address reservation").
@@ -141,7 +209,7 @@ This is called a **DHCP reservation** (or "static lease" / "address reservation"
    pool is `.100`–`.200`), save, and reconnect the laptop to the Wi-Fi.
 5. Check with `ipconfig`. The launcher shows the new address; re-scan the QR code once if the phone had the old one.
 
-## 8. Keep the laptop awake while it runs
+## 9. Keep the laptop awake while it runs
 
 While the launcher runs it asks Windows to keep the **display** awake (a power request that is released on exit).
 Windows can still sleep from the lid, the power button, or an explicit Sleep, so for a laptop that drives a TV also set:
@@ -153,7 +221,7 @@ Windows can still sleep from the lid, the power button, or an explicit Sleep, so
 If the laptop does sleep and wakes later, Couch UI notices the resume, re-checks the network, re-binds its server if
 needed, re-announces `couchui.local` and re-detects displays. The phone reconnects by itself within a few seconds.
 
-## 9. TV settings
+## 10. TV settings
 
 Wording differs per brand; look for these:
 
@@ -169,12 +237,12 @@ Wording differs per brand; look for these:
 - **Win+P:** *Extend* keeps the laptop screen usable. Then use the phone's **Settings → Display** to put the launcher on
   the TV. *Second screen only* makes the TV the only screen (required if the lid is closed).
 
-## 10. Troubleshooting
+## 11. Troubleshooting
 
 | Problem | What to try |
 | --- | --- |
 | Phone cannot open the page | Same Wi-Fi? Laptop network profile set to **Private**? Router "client/AP isolation" off? Firewall rule present (section 2)? Try the IP address instead of `couchui.local`. |
-| `couchui.local` does not open but the IP does | Allow the iOS local-network prompt; some routers/VPNs block mDNS; use the IP address (give the laptop a fixed IP, section 7). |
+| `couchui.local` does not open but the IP does | Allow the iOS local-network prompt; some routers/VPNs block mDNS; use the IP address (give the laptop a fixed IP, section 8). |
 | Red banner "Port 8787 is already in use" | Another program (or another copy of Couch UI) has the port. Close it, or change `"port"` in `config.json` and restart. |
 | Launcher does not take keyboard focus after Home | Windows sometimes refuses; the launcher still appears and the phone still navigates it. See the log for which method worked. |
 | Status line says *No network connection* | Wi-Fi dropped. The launcher recovers by itself when it returns; phones reconnect automatically. |

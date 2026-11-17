@@ -49,3 +49,18 @@ export function migrateLegacyData(newDir: string, legacyDir: string): string[] {
   }
   return copied;
 }
+
+/**
+ * Same idea as prepareConfig for any other user-editable file shipped with the app (apps.json):
+ * development uses the project's copy; the installed app seeds <app data>\<name> on first run and then only reads that.
+ */
+export function prepareUserFile(name: string, o: { packaged: boolean; bundledDir: string; userData: string }): string {
+  const bundled = path.join(o.bundledDir, name);
+  if (!o.packaged) return bundled;
+  const target = path.join(o.userData, name);
+  if (!fs.existsSync(target)) {
+    fs.mkdirSync(o.userData, { recursive: true });
+    fs.copyFileSync(bundled, target);
+  }
+  return target;
+}
