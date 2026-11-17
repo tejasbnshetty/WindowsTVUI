@@ -1,0 +1,12 @@
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: radial-gradient(ellipse at top, #161a26, #0b0d12 70%); color: #e8eaf0; font-family: "Segoe UI", sans-serif; overflow: hidden; cursor: none; }
+body { display: flex; flex-direction: column; padding: 5vh 6vw; }
+h1 { font-size: 3.5vh; font-weight: 300; letter-spacing: .3em; text-transform: uppercase; opacity: .6; margin: 0 0 5vh; }
+#grid { flex: 1; display: grid; grid-template-columns: repeat(2, 1fr); gap: 3vw; align-content: center; max-width: 80vw; margin: 0 auto; width: 100%; }
+.tile { height: 28vh; border-radius: 2vh; background: #1a1e2b; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 2vh; border: .6vh solid transparent; transition: transform .15s, box-shadow .15s, border-color .15s; }
+.tile .icon { width: 11vh; height: 11vh; border-radius: 50%; background: var(--accent); display: grid; place-items: center; font-size: 6vh; font-weight: 600; }
+.tile .label { font-size: 4vh; }
+.tile.focused { transform: scale(1.06); border-color: #fff; box-shadow: 0 0 5vh color-mix(in srgb, var(--accent) 60%, transparent); background: #232838; }
+#toast { position: fixed; bottom: 8vh; left: 50%; transform: translateX(-50%); background: #7f1d1d; padding: 1.5vh 3vw; border-radius: 1vh; font-size: 2.5vh; opacity: 0; transition: opacity .2s; }
+#toast.show { opacity: 1; }
+.hint { text-align: center; opacity: .4; font-size: 2.2vh; }

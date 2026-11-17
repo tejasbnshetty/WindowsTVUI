@@ -1,0 +1,17 @@
+{
+  "name": "windows-tv-ui",
+  "version": "0.1.0",
+  "description": "Fullscreen media launcher for a TV",
+  "main": "dist/main.js",
+  "private": true,
+  "scripts": {
+    "build": "tsc",
+    "start": "tsc && node scripts/run.js",
+    "dev": "tsc --watch --preserveWatchOutput"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "electron": "^45.3.3",
+    "typescript": "^7.0.2"
+  }
+}
