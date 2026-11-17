@@ -3,6 +3,15 @@
 // Layering:  Input API (this file)  ->  RawInput descriptors  ->  InputBackend.
 // The default backend (createWin32Backend) talks to user32.dll; tests substitute a mock
 // backend and assert on the exact descriptors that would be sent.
+//
+// Keyboard robustness (see M4 notes on intermittent lost Backspaces):
+//  * Every non-Unicode key event carries BOTH the virtual-key code and the hardware scan code.
+//    Some applications and input paths ignore events whose scan code is 0.
+//  * A key press is two separate SendInput calls with a short dwell in between, instead of
+//    down+up in one atomic batch. Zero-dwell presses can be coalesced or missed by apps that
+//    sample key state, and by text services that watch for the key-down first.
+//  * All keyboard output goes through one ordered queue, so text typed just before a Backspace
+//    is always fully delivered before the Backspace starts.
 
 import type { KeyName, MediaAction, MouseButton } from "./protocol";
 
@@ -28,7 +37,7 @@ export const VK = {
   BACK: 0x08, TAB: 0x09, RETURN: 0x0d, SHIFT: 0x10, CONTROL: 0x11, MENU: 0x12 /* Alt */,
   ESCAPE: 0x1b, PRIOR: 0x21 /* PageUp */, NEXT: 0x22 /* PageDown */, END: 0x23, HOME: 0x24,
   LEFT: 0x25, UP: 0x26, RIGHT: 0x27, DOWN: 0x28,
-  W: 0x57, T: 0x54, F5: 0x74,
+  W: 0x57, T: 0x54, F4: 0x73, F5: 0x74,
   VOLUME_MUTE: 0xad, VOLUME_DOWN: 0xae, VOLUME_UP: 0xaf,
   MEDIA_NEXT_TRACK: 0xb0, MEDIA_PREV_TRACK: 0xb1, MEDIA_PLAY_PAUSE: 0xb3,
 } as const;
@@ -41,6 +50,8 @@ export type RawInput =
 export interface InputBackend {
   /** Sends the inputs as ONE atomic SendInput call. Returns how many were accepted. */
   sendInput(inputs: RawInput[]): number;
+  /** Hardware scan code for a virtual key (MapVirtualKey). Optional: 0 is used when absent. */
+  scanCode?(vk: number): number;
 }
 
 export type Modifier = "ctrl" | "alt" | "shift";
@@ -49,7 +60,7 @@ const MODIFIER_VK: Record<Modifier, number> = { ctrl: VK.CONTROL, alt: VK.MENU, 
 // Keys that need KEYEVENTF_EXTENDEDKEY so they act as the grey navigation keys, not numpad keys.
 const EXTENDED_VKS: ReadonlySet<number> = new Set([VK.PRIOR, VK.NEXT, VK.END, VK.HOME, VK.LEFT, VK.UP, VK.RIGHT, VK.DOWN]);
 
-/** Whitelisted key names -> (vk, modifiers). The only keys the remote can press. */
+/** Whitelisted key names -> (vk, modifiers). The only keys the remote can press directly. */
 export const KEY_TABLE: Record<KeyName, { vk: number; modifiers: Modifier[] }> = {
   Enter: { vk: VK.RETURN, modifiers: [] },
   Backspace: { vk: VK.BACK, modifiers: [] },
@@ -87,11 +98,19 @@ const BUTTON_FLAGS: Record<MouseButton, { down: number; up: number }> = {
 
 // ---- Descriptor builders (pure) ----
 const mouse = (flags: number, dx = 0, dy = 0, mouseData = 0): RawInput => ({ kind: "mouse", dx, dy, mouseData, flags });
-const key = (vk: number, flags = 0, scan = 0): RawInput => ({ kind: "key", vk, scan, flags });
-const keyFlags = (vk: number, up: boolean): number =>
-  (EXTENDED_VKS.has(vk) ? KEYEVENTF_EXTENDEDKEY : 0) | (up ? KEYEVENTF_KEYUP : 0);
+const unicodeKey = (unit: number, up: boolean): RawInput =>
+  ({ kind: "key", vk: 0, scan: unit, flags: KEYEVENTF_UNICODE | (up ? KEYEVENTF_KEYUP : 0) });
 /** SendInput stores wheel deltas in a DWORD: negative values are their two's-complement form. */
 const dword = (n: number): number => n >>> 0;
+
+export interface InputOptions {
+  /** How long a key stays down before its key-up is sent. */
+  holdMs?: number;
+  /** Pause after each keyboard action so consecutive ones never run together. */
+  gapMs?: number;
+  /** Replaceable in tests. */
+  wait?: (ms: number) => Promise<void>;
+}
 
 export interface Input {
   moveRelative(dx: number, dy: number): void;
@@ -106,17 +125,51 @@ export interface Input {
   mediaKey(name: MediaAction): void;
   /** Named, whitelisted key (see KEY_TABLE). */
   namedKey(name: KeyName): void;
+  /** Resolves when every queued keyboard action has been sent. */
+  idle(): Promise<void>;
 }
 
-export function createInput(backend: InputBackend): Input {
+export function createInput(backend: InputBackend, options: InputOptions = {}): Input {
+  const holdMs = options.holdMs ?? 15;
+  const gapMs = options.gapMs ?? 8;
+  const wait = options.wait ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+
   const send = (inputs: RawInput[]): void => {
     if (inputs.length === 0) return;
-    const accepted = backend.sendInput(inputs);
-    if (accepted !== inputs.length) {
-      // Typically UIPI: the foreground window is elevated and we are not.
-      console.warn(`SendInput accepted ${accepted}/${inputs.length} events`);
+    try {
+      const accepted = backend.sendInput(inputs);
+      if (accepted !== inputs.length) {
+        // Typically UIPI: the foreground window is elevated and we are not.
+        console.warn(`SendInput accepted ${accepted}/${inputs.length} events`);
+      }
+    } catch (err) {
+      console.error("SendInput failed:", err);
     }
   };
+
+  const key = (vk: number, up: boolean): RawInput => ({
+    kind: "key",
+    vk,
+    scan: backend.scanCode?.(vk) ?? 0,
+    flags: (EXTENDED_VKS.has(vk) ? KEYEVENTF_EXTENDEDKEY : 0) | (up ? KEYEVENTF_KEYUP : 0),
+  });
+
+  // ---- keyboard queue: strictly ordered, with dwell + gap ----
+  interface Step { inputs: RawInput[]; waitAfter: number }
+  let chain: Promise<void> = Promise.resolve();
+  const enqueue = (steps: Step[]): void => {
+    chain = chain.then(async () => {
+      for (const s of steps) {
+        send(s.inputs);
+        if (s.waitAfter > 0) await wait(s.waitAfter);
+      }
+    });
+  };
+
+  const tapSteps = (vk: number, modifiers: Modifier[]): Step[] => [
+    { inputs: [...modifiers.map((m) => key(MODIFIER_VK[m], false)), key(vk, false)], waitAfter: holdMs },
+    { inputs: [key(vk, true), ...[...modifiers].reverse().map((m) => key(MODIFIER_VK[m], true))], waitAfter: gapMs },
+  ];
 
   const api: Input = {
     moveRelative(dx, dy) {
@@ -142,32 +195,29 @@ export function createInput(backend: InputBackend): Input {
       send(inputs);
     },
     keyTap(vk, modifiers = []) {
-      const inputs: RawInput[] = [];
-      for (const m of modifiers) inputs.push(key(MODIFIER_VK[m], 0));
-      inputs.push(key(vk, keyFlags(vk, false)));
-      inputs.push(key(vk, keyFlags(vk, true)));
-      for (const m of [...modifiers].reverse()) inputs.push(key(MODIFIER_VK[m], KEYEVENTF_KEYUP));
-      send(inputs);
+      enqueue(tapSteps(vk, modifiers));
     },
     typeText(text) {
       const inputs: RawInput[] = [];
       // One event pair per UTF-16 code unit; surrogate pairs (emoji) are sent as two units.
       for (let i = 0; i < text.length; i++) {
         const unit = text.charCodeAt(i);
-        inputs.push(key(0, KEYEVENTF_UNICODE, unit));
-        inputs.push(key(0, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP, unit));
+        inputs.push(unicodeKey(unit, false), unicodeKey(unit, true));
       }
-      send(inputs);
+      if (inputs.length) enqueue([{ inputs, waitAfter: gapMs }]);
     },
     mediaKey(name) {
       const vk = MEDIA_VK[name];
       if (vk === undefined) return;
-      send([key(vk, 0), key(vk, KEYEVENTF_KEYUP)]);
+      enqueue(tapSteps(vk, []));
     },
     namedKey(name) {
       const entry = KEY_TABLE[name];
       if (!entry) return;
       api.keyTap(entry.vk, entry.modifiers);
+    },
+    idle() {
+      return chain;
     },
   };
   return api;
@@ -195,6 +245,8 @@ export function createWin32Backend(): InputBackend {
   if (cbSize !== 40 && cbSize !== 28) throw new Error(`Unexpected INPUT struct size ${cbSize}`);
 
   const SendInput = user32.func("uint32 __stdcall SendInput(uint32 cInputs, INPUT *pInputs, int cbSize)");
+  const MapVirtualKeyW = user32.func("uint32 __stdcall MapVirtualKeyW(uint32 uCode, uint32 uMapType)");
+  const MAPVK_VK_TO_VSC = 0;
 
   return {
     sendInput(inputs) {
@@ -204,6 +256,9 @@ export function createWin32Backend(): InputBackend {
           : { type: INPUT_KEYBOARD, u: { ki: { wVk: i.vk, wScan: i.scan, dwFlags: i.flags, time: 0, dwExtraInfo: 0 } } }
       );
       return SendInput(native.length, native, cbSize);
+    },
+    scanCode(vk) {
+      return MapVirtualKeyW(vk, MAPVK_VK_TO_VSC) & 0xff;
     },
   };
 }

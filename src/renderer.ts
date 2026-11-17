@@ -1,11 +1,20 @@
 // Plain script (no imports/exports) so it loads directly in the page.
 interface TileView { id: string; label: string; color?: string }
-interface RemoteInfo { url?: string | null; pin?: string; qr?: string | null; error?: string }
+interface PairingView { open: boolean; pin: string | null; expiresAt: number | null }
+interface RemoteInfo {
+  error?: string | null;
+  url?: string | null;
+  qr?: string | null;
+  pairing?: PairingView;
+  devices?: number;
+}
 interface TvApi {
   getTiles(): Promise<TileView[]>;
   launch(id: string): Promise<{ ok: boolean; error?: string }>;
   getRemoteInfo(): Promise<RemoteInfo>;
+  openPairing(): void;
   onNav(cb: (action: string) => void): void;
+  onPairing(cb: (pairing: unknown, devices: unknown) => void): void;
   quit(): void;
 }
 interface Window { tv: TvApi }
@@ -89,34 +98,84 @@ interface Window { tv: TvApi }
 
   window.addEventListener("keydown", (e) => {
     if (e.key === "Escape") { window.tv.quit(); e.preventDefault(); return; }
+    if ((e.key === "p" || e.key === "P") && !e.ctrlKey && !e.altKey && !e.metaKey) {
+      window.tv.openPairing(); // shows a fresh PIN for pairing another phone
+      e.preventDefault();
+      return;
+    }
     const action = KEYS[e.key];
     if (action && handleAction(action)) e.preventDefault();
   });
 
   window.tv.onNav((action) => { handleAction(action); });
 
-  // The cursor is hidden for TV use, but shown while it's being moved (phone trackpad / mouse).
+  // ---- Mouse cursor: visible while it moves, hidden after 3 s of inactivity ----
+  const CURSOR_IDLE_MS = 3000;
   let cursorTimer: number | undefined;
-  window.addEventListener("mousemove", () => {
-    document.documentElement.classList.add("show-cursor");
+  function wakeCursor() {
+    document.documentElement.classList.remove("idle-cursor");
     window.clearTimeout(cursorTimer);
-    cursorTimer = window.setTimeout(() => document.documentElement.classList.remove("show-cursor"), 2500);
+    cursorTimer = window.setTimeout(() => document.documentElement.classList.add("idle-cursor"), CURSOR_IDLE_MS);
+  }
+  // Chromium emits synthetic mousemoves at the SAME position after layout/style changes (e.g. when
+  // the cursor style flips); those must not count as activity or the cursor would flicker back.
+  let lastX = Number.NaN, lastY = Number.NaN;
+  window.addEventListener("mousemove", (e) => {
+    if (e.screenX === lastX && e.screenY === lastY) return;
+    lastX = e.screenX;
+    lastY = e.screenY;
+    wakeCursor();
+  });
+  window.addEventListener("mousedown", wakeCursor);
+  wakeCursor();
+
+  // ---- Remote status: error banner + pairing panel ----
+  const banner = document.getElementById("error-banner")!;
+  const pairingEl = document.getElementById("pairing")!;
+  const urlEl = document.getElementById("pair-url")!;
+  const pinRow = document.getElementById("pair-pin-row")!;
+  const pinEl = document.getElementById("pair-pin")!;
+  const hintEl = document.getElementById("pair-hint")!;
+  const titleEl = document.getElementById("pair-title")!;
+  const qrEl = document.getElementById("pair-qr") as HTMLImageElement;
+
+  let info: RemoteInfo = {};
+
+  function renderRemote(): void {
+    if (info.error) {
+      banner.textContent = info.error;
+      banner.hidden = false;
+      pairingEl.hidden = true;
+      return;
+    }
+    banner.hidden = true;
+    pairingEl.hidden = false;
+    const p = info.pairing;
+    const open = !!p?.open && !!p.pin;
+    urlEl.textContent = info.url ?? "No network connection";
+    if (open) {
+      titleEl.textContent = "Pair a phone";
+      pinEl.textContent = p!.pin!;
+      pinRow.hidden = false;
+      if (info.qr) { qrEl.src = info.qr; qrEl.hidden = false; } else { qrEl.hidden = true; }
+      hintEl.textContent = (info.devices ?? 0) > 0 ? "One phone can pair with this PIN." : "";
+    } else {
+      // Pairing is closed: no PIN or QR on screen. Phones that were paired before reconnect on their own.
+      titleEl.textContent = "Phone remote";
+      pinRow.hidden = true;
+      qrEl.hidden = true;
+      const n = info.devices ?? 0;
+      hintEl.textContent = `${n} phone${n === 1 ? "" : "s"} paired · press P to pair another`;
+    }
+  }
+
+  window.tv.onPairing((pairing, devices) => {
+    info = { ...info, pairing: pairing as PairingView, devices: Number(devices) || 0 };
+    renderRemote();
   });
 
-  // Pairing panel (bottom-right): URL, QR code, PIN.
-  const info = await window.tv.getRemoteInfo();
-  const urlEl = document.getElementById("pair-url")!;
-  const pinEl = document.getElementById("pair-pin")!;
-  const qrEl = document.getElementById("pair-qr") as HTMLImageElement;
-  if (info.error) {
-    urlEl.textContent = info.error;
-    pinEl.parentElement!.hidden = true;
-    qrEl.hidden = true;
-  } else {
-    urlEl.textContent = info.url ?? "No network connection";
-    pinEl.textContent = info.pin ?? "";
-    if (info.qr) qrEl.src = info.qr; else qrEl.hidden = true;
-  }
+  info = await window.tv.getRemoteInfo();
+  renderRemote();
 
   if (els.length) focus(0);
 })();

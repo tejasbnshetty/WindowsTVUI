@@ -96,10 +96,11 @@
   let retryDelay = 1000;
   let attempting = false;
 
-  function showPair(): void {
+  function showPair(message = ""): void {
     stopConnection();
     remoteView.hidden = true;
     pairView.hidden = false;
+    pairMsg.textContent = message;
     setStatus("off");
     pinInput.focus();
   }
@@ -149,7 +150,11 @@
       showRemote();
       setStatus("connecting");
       const valid = await checkSession(token);
-      if (valid === false) { store.remove(TOKEN_KEY); showPair(); return; }
+      if (valid === false) {
+        store.remove(TOKEN_KEY);
+        showPair("This phone isn't paired any more. Enter the PIN shown on the TV.");
+        return;
+      }
       if (valid === null) { setStatus("off"); scheduleReconnect(); return; }
       connect(token);
     } finally {
@@ -163,9 +168,11 @@
     const socket = new WebSocket(`${scheme}://${location.host}/ws?token=${encodeURIComponent(token)}`);
     ws = socket;
     socket.onopen = () => { retryDelay = 1000; setStatus("on"); };
+    socket.onmessage = (e) => handleServerMessage(e.data);
     socket.onclose = () => {
       if (ws === socket) ws = null;
       clearQueue();
+      stopAllRepeats();
       heldButtons.clear(); // the server releases anything still held when the socket closes
       setStatus("off");
       scheduleReconnect();
@@ -182,9 +189,10 @@
     }
   }
   document.addEventListener("visibilitychange", () => {
-    if (document.hidden) releaseAll(); else wake();
+    if (document.hidden) { releaseAll(); stopAllRepeats(); } else wake();
   });
-  window.addEventListener("pagehide", releaseAll);
+  window.addEventListener("pagehide", () => { releaseAll(); stopAllRepeats(); });
+  window.addEventListener("blur", stopAllRepeats);
   window.addEventListener("pageshow", wake);
   window.addEventListener("online", wake);
 
@@ -206,17 +214,45 @@
   // =====================================================================
   // Buttons (pointerdown fires faster than click on iOS and keeps input focus)
   // =====================================================================
+  // Hold-to-repeat is done HERE, by re-sending whole taps while the finger is down, rather than by
+  // holding a key down on the laptop: if the phone drops off Wi-Fi mid-hold the repeats simply stop,
+  // and there is never a key stuck down on the TV.
+  const REPEAT_DELAY_MS = 400;
+  const REPEAT_EVERY_MS = 60;
+  const stopRepeaters = new Set<() => void>();
+  function stopAllRepeats(): void {
+    for (const stop of [...stopRepeaters]) stop();
+  }
+
   function bindPress(selector: string, attr: string, onPress: (value: string) => void): void {
     document.querySelectorAll<HTMLElement>(selector).forEach((btn) => {
-      const release = () => btn.classList.remove("pressed");
+      const repeats = btn.hasAttribute("data-repeat");
+      let delayTimer: number | undefined;
+      let repeatTimer: number | undefined;
+      const stop = () => {
+        window.clearTimeout(delayTimer);
+        window.clearInterval(repeatTimer);
+        delayTimer = repeatTimer = undefined;
+        btn.classList.remove("pressed");
+        stopRepeaters.delete(stop);
+      };
       btn.addEventListener("pointerdown", (e) => {
         e.preventDefault(); // don't steal focus from the keyboard field
         btn.classList.add("pressed");
-        onPress(btn.getAttribute(attr)!);
+        const value = btn.getAttribute(attr)!;
+        onPress(value);
+        if (!repeats) return;
+        stopRepeaters.add(stop);
+        delayTimer = window.setTimeout(() => {
+          repeatTimer = window.setInterval(() => {
+            // Don't let repeats pile up behind a congested queue.
+            if (queue.length < 3) onPress(value);
+          }, REPEAT_EVERY_MS);
+        }, REPEAT_DELAY_MS);
       });
-      btn.addEventListener("pointerup", release);
-      btn.addEventListener("pointercancel", release);
-      btn.addEventListener("pointerleave", release);
+      btn.addEventListener("pointerup", stop);
+      btn.addEventListener("pointercancel", stop);
+      btn.addEventListener("pointerleave", stop);
       btn.addEventListener("contextmenu", (e) => e.preventDefault());
     });
   }
@@ -224,12 +260,34 @@
   bindPress("[data-media]", "data-media", (action) => sendCmd({ type: "media", action }));
   bindPress("[data-key]", "data-key", (key) => sendCmd({ type: "key", key }));
 
+  // ---- Switch app / Close app. Close needs a second tap so it can't be hit by accident. ----
+  const ARM_MS = 3000;
+  function armable(btn: HTMLElement, armedLabel: string, run: () => void): void {
+    const label = btn.textContent ?? "";
+    let timer: number | undefined;
+    const disarm = () => { window.clearTimeout(timer); timer = undefined; btn.classList.remove("armed"); btn.textContent = label; };
+    btn.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      if (timer !== undefined) { disarm(); run(); return; }
+      btn.classList.add("armed");
+      btn.textContent = armedLabel;
+      timer = window.setTimeout(disarm, ARM_MS);
+    });
+    btn.addEventListener("contextmenu", (e) => e.preventDefault());
+  }
+  document.querySelectorAll<HTMLElement>('[data-app="switch"]').forEach((btn) => {
+    btn.addEventListener("pointerdown", (e) => { e.preventDefault(); sendCmd({ type: "app", action: "switch" }); });
+  });
+  document.querySelectorAll<HTMLElement>('[data-app="close"]').forEach((btn) => {
+    armable(btn, "Tap again to close", () => sendCmd({ type: "app", action: "close" }));
+  });
+
   // =====================================================================
   // Mode tabs
   // =====================================================================
-  type Mode = "nav" | "pad" | "kb";
-  const MODES: Mode[] = ["nav", "pad", "kb"];
-  const sections: Record<Mode, HTMLElement> = { nav: $("mode-nav"), pad: $("mode-pad"), kb: $("mode-kb") };
+  type Mode = "nav" | "pad" | "kb" | "set";
+  const MODES: Mode[] = ["nav", "pad", "kb", "set"];
+  const sections: Record<Mode, HTMLElement> = { nav: $("mode-nav"), pad: $("mode-pad"), kb: $("mode-kb"), set: $("mode-set") };
   const tabs = Array.from(document.querySelectorAll<HTMLButtonElement>(".tab"));
   const kbInput = $<HTMLInputElement>("kb-input");
   let mode: Mode = "nav";
@@ -449,6 +507,81 @@
   kbInput.addEventListener("focus", () => { resetKb(); window.scrollTo(0, 0); });
 
   // =====================================================================
+  // Server messages, toast, Settings tab
+  // =====================================================================
+  const toastEl = $("toast");
+  let toastTimer: number | undefined;
+  function showToast(text: string): void {
+    toastEl.textContent = text;
+    toastEl.classList.add("show");
+    window.clearTimeout(toastTimer);
+    toastTimer = window.setTimeout(() => toastEl.classList.remove("show"), 3500);
+  }
+
+  interface DisplayView { id: number; label: string; width: number; height: number; primary: boolean; current: boolean }
+  const isDisplayView = (d: unknown): d is DisplayView => {
+    if (typeof d !== "object" || d === null) return false;
+    const v = d as Record<string, unknown>;
+    return typeof v.id === "number" && typeof v.label === "string" && typeof v.width === "number" && typeof v.height === "number"
+      && typeof v.primary === "boolean" && typeof v.current === "boolean";
+  };
+
+  const displayList = $("display-list");
+  const displayReset = $<HTMLButtonElement>("display-reset");
+  const deviceInfo = $("device-info");
+
+  function renderState(s: Record<string, unknown>): void {
+    const displays = (Array.isArray(s.displays) ? s.displays : []).filter(isDisplayView);
+    displayList.replaceChildren(...displays.map((d) => {
+      const item = document.createElement("button");
+      item.className = "ditem" + (d.current ? " current" : "");
+      const text = document.createElement("div");
+      const name = document.createElement("div");
+      name.className = "dname";
+      name.textContent = d.label;
+      const meta = document.createElement("div");
+      meta.className = "dmeta";
+      meta.textContent = `${d.width} × ${d.height}`;
+      text.append(name, meta);
+      const badges = document.createElement("div");
+      if (d.primary) { const b = document.createElement("span"); b.className = "badge"; b.textContent = "PRIMARY"; badges.append(b, " "); }
+      if (d.current) { const b = document.createElement("span"); b.className = "badge here"; b.textContent = "LAUNCHER"; badges.append(b); }
+      item.append(text, badges);
+      item.addEventListener("click", () => {
+        if (d.current) return;
+        sendCmd({ type: "display_set", id: d.id });
+        showToast(`Moving the launcher to ${d.label}…`);
+      });
+      return item;
+    }));
+    displayReset.hidden = s.displayChoice !== "saved";
+    const n = Number(s.devices) || 0;
+    const pairing = s.pairing as { open?: unknown } | undefined;
+    deviceInfo.textContent = `${n} phone${n === 1 ? "" : "s"} remembered` + (pairing?.open ? " · PIN is showing on the TV" : "");
+  }
+
+  displayReset.addEventListener("click", () => {
+    sendCmd({ type: "display_set", id: null });
+    showToast("Using the default display.");
+  });
+  $("pair-new").addEventListener("click", () => sendCmd({ type: "pair_new" }));
+  armable($("forget-all"), "Tap again to forget all", () => sendCmd({ type: "forget_devices" }));
+
+  function handleServerMessage(data: unknown): void {
+    if (typeof data !== "string") return;
+    let msg: unknown;
+    try { msg = JSON.parse(data); } catch { return; }
+    if (typeof msg !== "object" || msg === null) return;
+    const m = msg as Record<string, unknown>;
+    switch (m.type) {
+      case "state": renderState(m); break;
+      case "notice": if (typeof m.text === "string") showToast(m.text.slice(0, 200)); break;
+      // The TV just opened a browser: the phone becomes a trackpad for it.
+      case "launched": if (m.kind === "browser") setMode("pad", false); break;
+    }
+  }
+
+  // =====================================================================
   // Pairing
   // =====================================================================
   let lockTimer: number | undefined;
@@ -498,6 +631,12 @@
       }
       if (res.status === 429) {
         startLockout(Number(body.retryAfter) || 60);
+        return;
+      }
+      if (res.status === 403) {
+        pairMsg.textContent = "Pairing is closed. On the TV press P, or tap “Pair new device” in Settings on a phone that is already paired.";
+        pinInput.value = "";
+        pairBtn.disabled = false;
         return;
       }
       pairMsg.textContent = res.status === 401

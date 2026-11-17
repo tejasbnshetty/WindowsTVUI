@@ -3,8 +3,10 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import * as crypto from "crypto";
+import type { Duplex } from "stream";
 import { WebSocketServer, WebSocket } from "ws";
-import { Command, MouseButton, isStreamCommand, parseCommand } from "./protocol";
+import { Command, MouseButton, ServerMessage, StateMessage, isStreamCommand, parseCommand } from "./protocol";
+import { DeviceStore, TOKEN_PATTERN, createMemoryDeviceStore, deviceLabel, hashToken } from "./devices";
 
 const MAX_PIN_FAILS = 5;
 const LOCKOUT_MS = 60_000;
@@ -15,20 +17,45 @@ const MAX_CONTROL_PER_SEC = 40;
 const MAX_STREAM_PER_SEC = 150;
 // Dead peers (phone asleep / left Wi-Fi) are dropped within ~2 intervals, which releases held buttons.
 const HEARTBEAT_MS = 10_000;
+const DEFAULT_PAIRING_WINDOW_MS = 10 * 60_000;
+
+export interface PairingState {
+  open: boolean;
+  /** Only present while pairing is open. */
+  pin: string | null;
+  /** null = stays open until a phone pairs (first run, no phones remembered yet). */
+  expiresAt: number | null;
+}
 
 export interface RemoteServer {
-  pin: string;
   port: number;
   /** Remote URL on the LAN, or null if no LAN address was found. */
   url: string | null;
-  close(): void;
+  getPairing(): PairingState;
+  /** Opens (or extends) the pairing window and returns the current PIN. */
+  openPairing(): PairingState;
+  closePairing(): void;
+  /** Forgets every remembered phone, disconnects them and re-opens pairing. */
+  forgetAllDevices(): void;
+  deviceCount(): number;
+  broadcast(msg: ServerMessage): void;
+  broadcastState(): void;
+  /** Stops listening, drops all sockets (releasing held buttons) and resolves once the port is free. */
+  close(): Promise<void>;
 }
 
 export interface RemoteOptions {
   /** 0 picks a free port (used by tests). */
   port: number;
-  /** Called only for validated commands from authenticated sockets. */
-  onCommand(cmd: Command): void;
+  /** Called only for validated commands from authenticated sockets. `reply` answers that socket. */
+  onCommand(cmd: Command, reply: (msg: ServerMessage) => void): void;
+  /** Where remembered phones live. Defaults to memory only. */
+  deviceStore?: DeviceStore;
+  /** Sent to each socket when it connects, and on broadcastState(). */
+  getState?: () => StateMessage;
+  onPairingChange?: (state: PairingState) => void;
+  /** How long a user-requested pairing window stays open. */
+  pairingWindowMs?: number;
 }
 
 /** First non-internal IPv4 address (link-local 169.254.x.x skipped). */
@@ -90,10 +117,58 @@ function sha256(s: string): Buffer {
   return crypto.createHash("sha256").update(s).digest();
 }
 
+function newPin(): string {
+  return String(crypto.randomInt(0, 1_000_000)).padStart(6, "0");
+}
+
 export function startRemoteServer(opts: RemoteOptions): Promise<RemoteServer> {
-  const pin = String(crypto.randomInt(0, 1_000_000)).padStart(6, "0");
-  const pinHash = sha256(pin);
-  const tokens = new Set<string>(); // one random token per paired device, memory only
+  const store = opts.deviceStore ?? createMemoryDeviceStore();
+  const pairingWindowMs = opts.pairingWindowMs ?? DEFAULT_PAIRING_WINDOW_MS;
+
+  // ---- Pairing state ----
+  // Pairing is only possible while a PIN is showing. With no remembered phones it stays open
+  // (first run); otherwise it must be opened on purpose and closes again after one pairing.
+  let pairingOpen = store.count() === 0;
+  let pin: string | null = pairingOpen ? newPin() : null;
+  let pinHash = pin ? sha256(pin) : null;
+  let pairingExpiresAt: number | null = null;
+  let pairingTimer: NodeJS.Timeout | undefined;
+
+  const pairingState = (): PairingState => ({ open: pairingOpen, pin: pairingOpen ? pin : null, expiresAt: pairingOpen ? pairingExpiresAt : null });
+
+  function notifyPairing(): void {
+    opts.onPairingChange?.(pairingState());
+    broadcastState();
+  }
+
+  function closePairing(): void {
+    clearTimeout(pairingTimer);
+    pairingTimer = undefined;
+    if (!pairingOpen) return;
+    pairingOpen = false;
+    pin = null;
+    pinHash = null;
+    pairingExpiresAt = null;
+    notifyPairing();
+  }
+
+  function openPairing(): PairingState {
+    clearTimeout(pairingTimer);
+    if (!pairingOpen) {
+      pairingOpen = true;
+      pin = newPin();
+      pinHash = sha256(pin);
+    }
+    if (store.count() > 0) {
+      pairingExpiresAt = Date.now() + pairingWindowMs;
+      pairingTimer = setTimeout(closePairing, pairingWindowMs);
+      pairingTimer.unref();
+    } else {
+      pairingExpiresAt = null;
+    }
+    notifyPairing();
+    return pairingState();
+  }
 
   // ---- PIN rate limiting (per client IP) ----
   const attempts = new Map<string, { fails: number; lockedUntil: number }>();
@@ -112,6 +187,10 @@ export function startRemoteServer(opts: RemoteOptions): Promise<RemoteServer> {
     attempts.set(ip, a);
   }
 
+  function isValidToken(token: string | null | undefined): boolean {
+    return !!token && TOKEN_PATTERN.test(token) && store.has(hashToken(token));
+  }
+
   function bearerToken(req: http.IncomingMessage): string | null {
     const m = /^Bearer ([0-9a-f]{64})$/.exec(req.headers.authorization ?? "");
     return m ? m[1] : null;
@@ -119,6 +198,10 @@ export function startRemoteServer(opts: RemoteOptions): Promise<RemoteServer> {
 
   // ---- HTTP ----
   async function handlePair(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    if (!pairingOpen || !pinHash) {
+      sendJson(res, 403, { error: "pairing closed" });
+      return;
+    }
     const ip = clientIp(req);
     const locked = lockRemainingMs(ip);
     if (locked > 0) {
@@ -138,7 +221,8 @@ export function startRemoteServer(opts: RemoteOptions): Promise<RemoteServer> {
     }
 
     // Constant-time compare on fixed-length hashes; malformed input simply counts as a failure.
-    const ok = /^\d{6}$/.test(candidate) && crypto.timingSafeEqual(sha256(candidate), pinHash);
+    // (Re-check pairingOpen: the window may have closed while the body was being read.)
+    const ok = pairingOpen && pinHash !== null && /^\d{6}$/.test(candidate) && crypto.timingSafeEqual(sha256(candidate), pinHash);
     if (!ok) {
       recordFailure(ip);
       const after = lockRemainingMs(ip);
@@ -153,7 +237,8 @@ export function startRemoteServer(opts: RemoteOptions): Promise<RemoteServer> {
 
     attempts.delete(ip);
     const token = crypto.randomBytes(32).toString("hex");
-    tokens.add(token);
+    store.add({ hash: hashToken(token), label: deviceLabel(req.headers["user-agent"]), createdAt: Date.now() });
+    closePairing(); // one phone per pairing window
     sendJson(res, 200, { token });
   }
 
@@ -175,8 +260,8 @@ export function startRemoteServer(opts: RemoteOptions): Promise<RemoteServer> {
     }
 
     if (method === "GET" && pathname === "/api/session") {
-      const token = bearerToken(req);
-      sendJson(res, token && tokens.has(token) ? 200 : 401, { ok: !!(token && tokens.has(token)) });
+      const ok = isValidToken(bearerToken(req));
+      sendJson(res, ok ? 200 : 401, { ok });
       return;
     }
 
@@ -199,7 +284,7 @@ export function startRemoteServer(opts: RemoteOptions): Promise<RemoteServer> {
   // ---- WebSocket ----
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_WS_MESSAGE_BYTES });
 
-  function rejectUpgrade(socket: import("stream").Duplex, status: string): void {
+  function rejectUpgrade(socket: Duplex, status: string): void {
     socket.write(`HTTP/1.1 ${status}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
     socket.destroy();
   }
@@ -220,7 +305,7 @@ export function startRemoteServer(opts: RemoteOptions): Promise<RemoteServer> {
       rejectUpgrade(socket, "404 Not Found");
       return;
     }
-    if (!token || !tokens.has(token)) {
+    if (!isValidToken(token)) {
       rejectUpgrade(socket, "401 Unauthorized");
       return;
     }
@@ -235,7 +320,19 @@ export function startRemoteServer(opts: RemoteOptions): Promise<RemoteServer> {
     const buttons = held.get(ws);
     held.delete(ws);
     if (!buttons) return;
-    for (const button of buttons) opts.onCommand({ type: "mouse_up", button });
+    for (const button of buttons) opts.onCommand({ type: "mouse_up", button }, () => {});
+  }
+
+  function sendTo(ws: WebSocket, msg: ServerMessage): void {
+    if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
+  }
+
+  function broadcast(msg: ServerMessage): void {
+    for (const ws of wss.clients) sendTo(ws, msg);
+  }
+
+  function broadcastState(): void {
+    if (opts.getState) broadcast(opts.getState());
   }
 
   // Only reachable via the upgrade handler above, i.e. after token validation.
@@ -245,6 +342,8 @@ export function startRemoteServer(opts: RemoteOptions): Promise<RemoteServer> {
     ws.on("pong", () => alive.set(ws, true));
     ws.on("error", () => {});
     ws.on("close", () => releaseHeld(ws));
+    const reply = (msg: ServerMessage) => sendTo(ws, msg);
+    if (opts.getState) reply(opts.getState());
 
     let windowStart = Date.now();
     let controlCount = 0;
@@ -280,7 +379,7 @@ export function startRemoteServer(opts: RemoteOptions): Promise<RemoteServer> {
       if (cmd.type === "mouse_down") buttons?.add(cmd.button);
       else if (cmd.type === "mouse_up") buttons?.delete(cmd.button);
 
-      opts.onCommand(cmd);
+      opts.onCommand(cmd, reply);
     });
   });
 
@@ -304,6 +403,30 @@ export function startRemoteServer(opts: RemoteOptions): Promise<RemoteServer> {
   }, 60_000);
   prune.unref();
 
+  function dropAllSockets(): void {
+    // Release synchronously: terminate() delivers 'close' asynchronously, too late at app exit.
+    for (const ws of wss.clients) {
+      releaseHeld(ws);
+      ws.terminate();
+    }
+  }
+
+  let closing: Promise<void> | null = null;
+  function close(): Promise<void> {
+    if (closing) return closing;
+    clearInterval(heartbeat);
+    clearInterval(prune);
+    clearTimeout(pairingTimer);
+    dropAllSockets();
+    closing = new Promise<void>((resolve) => {
+      wss.close(() => {
+        server.close(() => resolve());
+        server.closeAllConnections?.(); // keep-alive HTTP connections would otherwise hold the port
+      });
+    });
+    return closing;
+  }
+
   return new Promise((resolve, reject) => {
     server.once("error", reject);
     server.listen(opts.port, "0.0.0.0", () => {
@@ -312,19 +435,20 @@ export function startRemoteServer(opts: RemoteOptions): Promise<RemoteServer> {
       const addr = server.address();
       const port = typeof addr === "object" && addr ? addr.port : opts.port;
       resolve({
-        pin,
         port,
         url: ip ? `http://${ip}:${port}` : null,
-        close() {
-          clearInterval(heartbeat);
-          clearInterval(prune);
-          // Release synchronously: terminate() delivers 'close' asynchronously, too late at app exit.
-          for (const ws of wss.clients) {
-            releaseHeld(ws);
-            ws.terminate();
-          }
-          server.close();
+        getPairing: pairingState,
+        openPairing,
+        closePairing,
+        forgetAllDevices() {
+          store.clear();
+          dropAllSockets();
+          openPairing();
         },
+        deviceCount: () => store.count(),
+        broadcast,
+        broadcastState,
+        close,
       });
     });
   });

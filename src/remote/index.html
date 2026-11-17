@@ -16,11 +16,12 @@
   <header>
     <div id="status" class="status off"><i></i><span id="status-text">Disconnected</span></div>
   </header>
+  <div id="toast" role="status"></div>
 
   <main id="pair-view" hidden>
     <form id="pair-form" autocomplete="off">
       <h1>Pair remote</h1>
-      <p>Enter the 6-digit PIN shown on the TV.</p>
+      <p id="pair-help">Enter the 6-digit PIN shown on the TV.</p>
       <input id="pin" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="off" autocorrect="off" placeholder="000000" aria-label="PIN">
       <button id="pair-btn" type="submit">Connect</button>
       <p id="pair-msg" role="alert"></p>
@@ -30,10 +31,10 @@
   <div id="remote-view" class="remote" hidden>
     <!-- Persistent strip: media + Home, visible in every mode -->
     <div class="mediabar">
-      <button class="mkey" data-media="vol_down" aria-label="Volume down">
+      <button class="mkey" data-media="vol_down" data-repeat aria-label="Volume down">
         <svg viewBox="0 0 24 24"><path class="f" d="M3 9v6h4l5 4V5L7 9z"/><path d="M16 12h5"/></svg>
       </button>
-      <button class="mkey" data-media="vol_up" aria-label="Volume up">
+      <button class="mkey" data-media="vol_up" data-repeat aria-label="Volume up">
         <svg viewBox="0 0 24 24"><path class="f" d="M3 9v6h4l5 4V5L7 9z"/><path d="M15.5 12h6M18.5 9v6"/></svg>
       </button>
       <button class="mkey" data-media="mute" aria-label="Mute">
@@ -57,23 +58,27 @@
       <!-- Navigate -->
       <section id="mode-nav" class="mode">
         <div class="dpad">
-          <button class="key up" data-action="up" aria-label="Up">
+          <button class="key up" data-action="up" data-repeat aria-label="Up">
             <svg viewBox="0 0 24 24"><path d="M6 15l6-6 6 6"/></svg>
           </button>
-          <button class="key left" data-action="left" aria-label="Left">
+          <button class="key left" data-action="left" data-repeat aria-label="Left">
             <svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg>
           </button>
           <button class="key ok" data-action="ok" aria-label="OK">OK</button>
-          <button class="key right" data-action="right" aria-label="Right">
+          <button class="key right" data-action="right" data-repeat aria-label="Right">
             <svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>
           </button>
-          <button class="key down" data-action="down" aria-label="Down">
+          <button class="key down" data-action="down" data-repeat aria-label="Down">
             <svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>
           </button>
         </div>
         <div class="row">
           <button class="key wide" data-action="back">Back</button>
           <button class="key wide" data-action="home">Home</button>
+        </div>
+        <div class="row apps">
+          <button class="key wide slim" data-app="switch">Switch app</button>
+          <button class="key wide slim close-app" data-app="close">Close app</button>
         </div>
       </section>
 
@@ -86,6 +91,10 @@
           <button class="key wide" id="btn-left">Left click</button>
           <button class="key wide" id="btn-right">Right click</button>
         </div>
+        <div class="row apps">
+          <button class="key wide slim" data-app="switch">Switch app</button>
+          <button class="key wide slim close-app" data-app="close">Close app</button>
+        </div>
         <div class="settings">
           <label class="setting">Speed
             <input type="range" id="sens" min="0.5" max="3" step="0.1" value="1.5">
@@ -97,24 +106,37 @@
       <!-- Keyboard -->
       <section id="mode-kb" class="mode kb" hidden>
         <input id="kb-input" type="text" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" enterkeyhint="enter" aria-label="Type here to send text to the TV">
-        <p class="kb-hint">Tap the box and type. Characters go straight to the app in front.</p>
+        <p class="kb-hint">Tap the box and type. Characters go straight to the app in front. Hold arrows or Bksp to repeat.</p>
         <div class="quick">
           <button class="qkey" data-key="Escape">Esc</button>
-          <button class="qkey" data-key="Tab">Tab</button>
-          <button class="qkey" data-key="Backspace">Bksp</button>
+          <button class="qkey" data-key="Tab" data-repeat>Tab</button>
+          <button class="qkey" data-key="Backspace" data-repeat>Bksp</button>
           <button class="qkey" data-key="Enter">Enter</button>
-          <button class="qkey" data-key="ArrowLeft" aria-label="Left arrow">&larr;</button>
-          <button class="qkey" data-key="ArrowUp" aria-label="Up arrow">&uarr;</button>
-          <button class="qkey" data-key="ArrowDown" aria-label="Down arrow">&darr;</button>
-          <button class="qkey" data-key="ArrowRight" aria-label="Right arrow">&rarr;</button>
+          <button class="qkey" data-key="ArrowLeft" data-repeat aria-label="Left arrow">&larr;</button>
+          <button class="qkey" data-key="ArrowUp" data-repeat aria-label="Up arrow">&uarr;</button>
+          <button class="qkey" data-key="ArrowDown" data-repeat aria-label="Down arrow">&darr;</button>
+          <button class="qkey" data-key="ArrowRight" data-repeat aria-label="Right arrow">&rarr;</button>
           <button class="qkey" data-key="Alt+Left">Page back</button>
           <button class="qkey" data-key="Alt+Right">Page fwd</button>
           <button class="qkey" data-key="F5">Refresh</button>
           <button class="qkey" data-key="Ctrl+W">Close tab</button>
           <button class="qkey" data-key="Ctrl+T">New tab</button>
-          <button class="qkey" data-key="PageUp">PgUp</button>
-          <button class="qkey" data-key="PageDown">PgDn</button>
+          <button class="qkey" data-key="PageUp" data-repeat>PgUp</button>
+          <button class="qkey" data-key="PageDown" data-repeat>PgDn</button>
         </div>
+      </section>
+
+      <!-- Settings -->
+      <section id="mode-set" class="mode set" hidden>
+        <h2>Display</h2>
+        <p class="set-note">Move the launcher to another screen.</p>
+        <div id="display-list" class="list"></div>
+        <button class="sbtn" id="display-reset" hidden>Use the default display</button>
+
+        <h2>Phones</h2>
+        <p class="set-note" id="device-info">&nbsp;</p>
+        <button class="sbtn" id="pair-new">Pair new device</button>
+        <button class="sbtn danger" id="forget-all">Forget all devices</button>
       </section>
     </div>
 
@@ -122,6 +144,7 @@
       <button class="tab" data-mode="nav">Navigate</button>
       <button class="tab" data-mode="pad">Trackpad</button>
       <button class="tab" data-mode="kb">Keyboard</button>
+      <button class="tab" data-mode="set">Settings</button>
     </nav>
   </div>
 

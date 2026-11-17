@@ -76,3 +76,22 @@ test("extra fields never leak into the parsed command", () => {
   assert.deepEqual(cmd2, { type: "nav", action: "ok" });
   assert.equal(({} as Record<string, unknown>).polluted, undefined);
 });
+
+test("M4 commands: app / display_set / forget_devices / pair_new", () => {
+  assert.deepEqual(parseCommand({ type: "app", action: "close" }), { type: "app", action: "close" });
+  assert.deepEqual(parseCommand({ type: "app", action: "switch" }), { type: "app", action: "switch" });
+  for (const a of ["quit", "kill", "Close", "", 1, null, ["close"]]) assert.equal(parseCommand({ type: "app", action: a }), null, String(a));
+
+  assert.deepEqual(parseCommand({ type: "display_set", id: 2779098405 }), { type: "display_set", id: 2779098405 });
+  assert.deepEqual(parseCommand({ type: "display_set", id: null }), { type: "display_set", id: null });
+  for (const id of ["1", 1.5, NaN, Infinity, 2 ** 60, {}, [], true, undefined]) {
+    assert.equal(parseCommand({ type: "display_set", id }), null, String(id));
+  }
+
+  assert.deepEqual(parseCommand({ type: "forget_devices", extra: "x" }), { type: "forget_devices" });
+  assert.deepEqual(parseCommand({ type: "pair_new", pin: "123456" }), { type: "pair_new" });
+});
+
+test("Alt+F4 / Alt+Tab cannot be sent as plain keys", () => {
+  for (const key of ["Alt+F4", "Alt+Tab", "Win+D", "Ctrl+Alt+Delete"]) assert.equal(parseCommand({ type: "key", key }), null, key);
+});

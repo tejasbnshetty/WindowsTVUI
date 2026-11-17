@@ -14,6 +14,8 @@ export const KEY_NAMES = [
 ] as const;
 export type KeyName = (typeof KEY_NAMES)[number];
 
+export type AppAction = "close" | "switch";
+
 export type Command =
   | { type: "nav"; action: NavAction }
   | { type: "mouse_move"; dx: number; dy: number }
@@ -23,9 +25,43 @@ export type Command =
   | { type: "scroll"; dx: number; dy: number }
   | { type: "key"; key: KeyName }
   | { type: "text"; value: string }
-  | { type: "media"; action: MediaAction };
+  | { type: "media"; action: MediaAction }
+  // Handled by the main process, not by SendInput directly:
+  | { type: "app"; action: AppAction }
+  | { type: "display_set"; id: number | null } // null = back to the default display
+  | { type: "forget_devices" }
+  | { type: "pair_new" };
 
-export type InputCommand = Exclude<Command, { type: "nav" }>;
+/** Commands that map straight onto the Input API (see dispatch.ts). */
+export type InputCommand = Extract<
+  Command,
+  { type: "mouse_move" | "mouse_click" | "mouse_down" | "mouse_up" | "scroll" | "key" | "text" | "media" }
+>;
+
+// ---- Server -> remote messages ----
+export interface DisplayView {
+  id: number;
+  label: string;
+  width: number;
+  height: number;
+  primary: boolean;
+  /** The launcher is on this display. */
+  current: boolean;
+}
+
+export interface StateMessage {
+  type: "state";
+  displays: DisplayView[];
+  devices: number;
+  pairing: { open: boolean; expiresAt: number | null };
+  /** "saved" = chosen from the remote; "default" = config.json / started-on display. */
+  displayChoice: "saved" | "default";
+}
+
+export type ServerMessage =
+  | StateMessage
+  | { type: "notice"; text: string }
+  | { type: "launched"; kind: "browser" | "app" };
 
 // Limits
 export const MAX_MOVE = 200;     // pixels per mouse_move message, per axis
@@ -36,6 +72,7 @@ const NAV_ACTIONS: ReadonlySet<string> = new Set<NavAction>(["up", "down", "left
 const MOUSE_BUTTONS: ReadonlySet<string> = new Set<MouseButton>(["left", "right", "middle"]);
 const MEDIA_ACTIONS: ReadonlySet<string> = new Set<MediaAction>(["vol_up", "vol_down", "mute", "play_pause", "next", "prev"]);
 const KEY_SET: ReadonlySet<string> = new Set<string>(KEY_NAMES);
+const APP_ACTIONS: ReadonlySet<string> = new Set<AppAction>(["close", "switch"]);
 
 // C0/C1 control characters (incl. newline, tab, DEL). Enter/Tab/Backspace go through `key`.
 const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f]/;
@@ -90,6 +127,18 @@ export function parseCommand(raw: unknown): Command | null {
       const a = m.action;
       return typeof a === "string" && MEDIA_ACTIONS.has(a) ? { type, action: a as MediaAction } : null;
     }
+    case "app": {
+      const a = m.action;
+      return typeof a === "string" && APP_ACTIONS.has(a) ? { type, action: a as AppAction } : null;
+    }
+    case "display_set": {
+      const id = m.id;
+      if (id === null) return { type, id: null };
+      return typeof id === "number" && Number.isSafeInteger(id) ? { type, id } : null;
+    }
+    case "forget_devices":
+    case "pair_new":
+      return { type };
     default:
       return null; // unknown type
   }

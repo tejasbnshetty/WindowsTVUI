@@ -1,5 +1,5 @@
 * { box-sizing: border-box; }
-html, body { margin: 0; height: 100%; background: radial-gradient(ellipse at top, #161a26, #0b0d12 70%); color: #e8eaf0; font-family: "Segoe UI", sans-serif; overflow: hidden; cursor: none; }
+html, body { margin: 0; height: 100%; background: radial-gradient(ellipse at top, #161a26, #0b0d12 70%); color: #e8eaf0; font-family: "Segoe UI", sans-serif; overflow: hidden; }
 body { display: flex; flex-direction: column; padding: 5vh 6vw 26vh; }
 h1 { font-size: 3.5vh; font-weight: 300; letter-spacing: .3em; text-transform: uppercase; opacity: .6; margin: 0 0 3vh; }
 #grid { flex: 1; display: grid; grid-template-columns: repeat(2, 1fr); gap: 3vw; align-content: center; max-width: 80vw; margin: 0 auto; width: 100%; }
@@ -17,4 +17,7 @@ h1 { font-size: 3.5vh; font-weight: 300; letter-spacing: .3em; text-transform: u
 .pair-url { font-size: 2.4vh; }
 .pair-pin { font-size: 3.2vh; font-weight: 600; letter-spacing: .15em; margin-top: .8vh; }
 .pair-pin span { font-variant-numeric: tabular-nums; }
-html.show-cursor, html.show-cursor body { cursor: default; }
+html.idle-cursor, html.idle-cursor * { cursor: none !important; }
+.pair-hint { font-size: 1.9vh; opacity: .6; margin-top: .8vh; }
+#error-banner { position: fixed; top: 0; left: 0; right: 0; z-index: 10; background: #991b1b; color: #fff; font-size: 2.6vh; line-height: 1.4; padding: 2vh 6vw; text-align: center; box-shadow: 0 .5vh 3vh rgba(0,0,0,.5); }
+[hidden] { display: none !important; }

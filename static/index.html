@@ -7,16 +7,18 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
+  <div id="error-banner" role="alert" hidden></div>
   <h1>Home</h1>
   <div id="grid"></div>
   <div id="toast"></div>
-  <div class="hint">Arrows: move &nbsp;·&nbsp; Enter: launch &nbsp;·&nbsp; Esc: exit</div>
-  <div class="pairing">
-    <img id="pair-qr" alt="Remote QR code">
+  <div class="hint">Arrows: move &nbsp;·&nbsp; Enter: launch &nbsp;·&nbsp; P: pair a phone &nbsp;·&nbsp; Esc: exit</div>
+  <div class="pairing" id="pairing">
+    <img id="pair-qr" alt="Remote QR code" hidden>
     <div class="pair-text">
-      <div class="pair-title">Phone remote</div>
+      <div class="pair-title" id="pair-title">Phone remote</div>
       <div class="pair-url" id="pair-url"></div>
-      <div class="pair-pin">PIN <span id="pair-pin"></span></div>
+      <div class="pair-pin" id="pair-pin-row" hidden>PIN <span id="pair-pin"></span></div>
+      <div class="pair-hint" id="pair-hint"></div>
     </div>
   </div>
   <script src="../dist/renderer.js"></script>

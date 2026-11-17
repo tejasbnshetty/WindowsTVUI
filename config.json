@@ -1,5 +1,6 @@
 {
   "port": 8787,
+  "display": "auto",
   "tiles": [
     { "id": "browser", "label": "Browser", "color": "#3b82f6", "type": "url", "target": "https://www.google.com" },
     { "id": "youtube", "label": "YouTube", "color": "#ef4444", "type": "url", "target": "https://www.youtube.com/tv" },
