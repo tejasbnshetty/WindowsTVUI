@@ -10,8 +10,9 @@ contextBridge.exposeInMainWorld("tv", {
       if (typeof action === "string") cb(action);
     });
   },
-  onPairing: (cb: (pairing: unknown, devices: unknown) => void) => {
-    ipcRenderer.on("remote:pairing", (_e, pairing: unknown, devices: unknown) => cb(pairing, devices));
+  // Pushed whenever the pairing state, the LAN address or the network status changes.
+  onInfo: (cb: (info: unknown) => void) => {
+    ipcRenderer.on("remote:info", (_e, info: unknown) => cb(info));
   },
   quit: () => ipcRenderer.send("app:quit"),
 });

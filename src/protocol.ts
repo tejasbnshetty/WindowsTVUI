@@ -30,7 +30,8 @@ export type Command =
   | { type: "app"; action: AppAction }
   | { type: "display_set"; id: number | null } // null = back to the default display
   | { type: "forget_devices" }
-  | { type: "pair_new" };
+  | { type: "pair_new" }
+  | { type: "exit_app" };
 
 /** Commands that map straight onto the Input API (see dispatch.ts). */
 export type InputCommand = Extract<
@@ -138,6 +139,7 @@ export function parseCommand(raw: unknown): Command | null {
     }
     case "forget_devices":
     case "pair_new":
+    case "exit_app":
       return { type };
     default:
       return null; // unknown type

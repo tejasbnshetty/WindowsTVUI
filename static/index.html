@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:">
-  <title>WindowsTVUI</title>
+  <title>Couch UI</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -17,10 +17,12 @@
     <div class="pair-text">
       <div class="pair-title" id="pair-title">Phone remote</div>
       <div class="pair-url" id="pair-url"></div>
+      <div class="pair-mdns" id="pair-mdns" hidden></div>
       <div class="pair-pin" id="pair-pin-row" hidden>PIN <span id="pair-pin"></span></div>
       <div class="pair-hint" id="pair-hint"></div>
     </div>
   </div>
+  <div class="net-status" id="net-status"><i></i><span id="net-text">Checking network…</span></div>
   <script src="../dist/renderer.js"></script>
 </body>
 </html>

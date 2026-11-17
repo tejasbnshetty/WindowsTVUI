@@ -566,6 +566,7 @@
   });
   $("pair-new").addEventListener("click", () => sendCmd({ type: "pair_new" }));
   armable($("forget-all"), "Tap again to forget all", () => sendCmd({ type: "forget_devices" }));
+  armable($("exit-app"), "Tap again to exit", () => sendCmd({ type: "exit_app" }));
 
   function handleServerMessage(data: unknown): void {
     if (typeof data !== "string") return;

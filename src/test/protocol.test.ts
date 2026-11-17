@@ -95,3 +95,8 @@ test("M4 commands: app / display_set / forget_devices / pair_new", () => {
 test("Alt+F4 / Alt+Tab cannot be sent as plain keys", () => {
   for (const key of ["Alt+F4", "Alt+Tab", "Win+D", "Ctrl+Alt+Delete"]) assert.equal(parseCommand({ type: "key", key }), null, key);
 });
+
+test("M5 command: exit_app takes no arguments", () => {
+  assert.deepEqual(parseCommand({ type: "exit_app" }), { type: "exit_app" });
+  assert.deepEqual(parseCommand({ type: "exit_app", force: true, code: 1 }), { type: "exit_app" });
+});

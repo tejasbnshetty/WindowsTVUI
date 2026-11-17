@@ -1,11 +1,11 @@
 import * as http from "http";
 import * as fs from "fs";
-import * as os from "os";
 import * as path from "path";
 import * as crypto from "crypto";
 import type { Duplex } from "stream";
 import { WebSocketServer, WebSocket } from "ws";
 import { Command, MouseButton, ServerMessage, StateMessage, isStreamCommand, parseCommand } from "./protocol";
+import { getLanIp } from "./network";
 import { DeviceStore, TOKEN_PATTERN, createMemoryDeviceStore, deviceLabel, hashToken } from "./devices";
 
 const MAX_PIN_FAILS = 5;
@@ -58,18 +58,7 @@ export interface RemoteOptions {
   pairingWindowMs?: number;
 }
 
-/** First non-internal IPv4 address (link-local 169.254.x.x skipped). */
-export function getLanIp(): string | null {
-  for (const addrs of Object.values(os.networkInterfaces())) {
-    for (const a of addrs ?? []) {
-      const family = a.family as string | number;
-      if ((family === "IPv4" || family === 4) && !a.internal && !a.address.startsWith("169.254.")) {
-        return a.address;
-      }
-    }
-  }
-  return null;
-}
+export { getLanIp } from "./network";
 
 // Static files are served from an explicit whitelist: no path is ever built from the request.
 const REMOTE_SRC = path.join(__dirname, "..", "src", "remote");

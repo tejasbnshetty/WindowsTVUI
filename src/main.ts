@@ -1,19 +1,25 @@
-import { app, BrowserWindow, ipcMain, Menu, powerSaveBlocker, screen, shell } from "electron";
+import { app, BrowserWindow, ipcMain, Menu, powerMonitor, powerSaveBlocker, screen, shell } from "electron";
 import { spawn } from "child_process";
 import * as fs from "fs";
+import * as http from "http";
 import * as path from "path";
 import * as QRCode from "qrcode";
 import { startRemoteServer, RemoteServer, PairingState } from "./server";
 import { Command, ServerMessage, StateMessage } from "./protocol";
 import { Input, VK, createInput, createWin32Backend } from "./input";
 import { dispatchInput } from "./dispatch";
-import { createFileDeviceStore } from "./devices";
+import { DeviceStore, createFileDeviceStore } from "./devices";
 import { createSettingsStore, SettingsStore } from "./settings";
 import { DisplayConfig, DisplayInfo, DisplayManager, createDisplayManager, resolveDisplay } from "./displays";
 import { Foreground, createForeground } from "./foreground";
 import { CLOSE_REFUSAL_TEXT, checkCloseTarget } from "./appControl";
 import { Win32, createWin32, handleToNumber } from "./win32";
 import { PowerGuard, createPowerGuard } from "./power";
+import { createNetworkMonitor, getLanInfo, NetworkMonitor } from "./network";
+import { MDNS_HOST, MdnsAdvertiser, createBonjourFactory, createMdnsAdvertiser } from "./mdns";
+import { createLogger } from "./logger";
+import { migrateLegacyData, prepareConfig } from "./config";
+import { createRecovery } from "./recovery";
 
 interface Tile {
   id: string;
@@ -31,11 +37,14 @@ interface Config {
 }
 
 const DEFAULT_PORT = 8787;
-const configPath = path.join(__dirname, "..", "config.json");
+const APP_ID = "com.couchui.app";
+
+/** Set at startup: the project's config.json in development, %APPDATA%\Couch UI\config.json when installed. */
+let configFile = path.join(__dirname, "..", "config.json");
 
 function loadConfig(): Config {
   // Windows editors (Notepad, PowerShell) often save UTF-8 with a BOM, which JSON.parse rejects.
-  return JSON.parse(fs.readFileSync(configPath, "utf8").replace(/^﻿/, "")) as Config;
+  return JSON.parse(fs.readFileSync(configFile, "utf8").replace(/^﻿/, "")) as Config;
 }
 
 function loadTiles(): Tile[] {
@@ -43,8 +52,12 @@ function loadTiles(): Tile[] {
 }
 
 function configuredPort(): number {
-  const p = loadConfig().port;
-  return Number.isInteger(p) && p! > 0 && p! < 65536 ? p! : DEFAULT_PORT;
+  try {
+    const p = loadConfig().port;
+    return Number.isInteger(p) && p! > 0 && p! < 65536 ? p! : DEFAULT_PORT;
+  } catch {
+    return DEFAULT_PORT;
+  }
 }
 
 function describeStartError(err: unknown, port: number): string {
@@ -58,6 +71,17 @@ function describeStartError(err: unknown, port: number): string {
   return `The phone remote could not start: ${(err as Error)?.message ?? String(err)}`;
 }
 
+/** What the launcher panel shows. Never contains a token; the PIN is only present while pairing is open. */
+interface LauncherInfo {
+  error: string | null;
+  url: string | null;
+  mdnsUrl: string | null;
+  qr: string | null;
+  pairing: PairingState;
+  devices: number;
+  network: { online: boolean; label: string | null; ip: string | null };
+}
+
 function startApp(): void {
   let win: BrowserWindow | null = null;
   let remote: RemoteServer | null = null;
@@ -67,9 +91,26 @@ function startApp(): void {
   let foreground: Foreground | null = null;
   let manager: DisplayManager | null = null;
   let settings: SettingsStore | null = null;
+  let deviceStore: DeviceStore | null = null;
   let power: PowerGuard | null = null;
-  let qrDataUrl: string | null = null;
+  let monitor: NetworkMonitor | null = null;
+  let mdns: MdnsAdvertiser | null = null;
   let quitting = false;
+
+  // ---------- logging, app-data location, config ----------
+  const userData = app.getPath("userData");
+  const logger = createLogger({ dir: path.join(userData, "logs") });
+  logger.installConsole();
+  process.on("uncaughtException", (err) => console.error("uncaughtException:", err));
+  process.on("unhandledRejection", (reason) => console.error("unhandledRejection:", reason));
+
+  // A custom --user-data-dir (tests, portable setups) means "keep this run isolated": no carrying data over.
+  if (!app.commandLine.hasSwitch("user-data-dir")) {
+    const copied = migrateLegacyData(userData, path.join(app.getPath("appData"), "windows-tv-ui"));
+    if (copied.length) console.log(`Carried over from the old app-data folder: ${copied.join(", ")}`);
+  }
+  configFile = prepareConfig({ packaged: app.isPackaged, bundledConfig: path.join(__dirname, "..", "config.json"), userData });
+  console.log(`Couch UI ${app.getVersion()} starting (${app.isPackaged ? "installed/portable" : "development"}); config: ${configFile}`);
 
   function alive(): BrowserWindow | null {
     return win && !win.isDestroyed() ? win : null;
@@ -93,6 +134,8 @@ function startApp(): void {
   function createWindow(display: DisplayInfo | null): void {
     win = new BrowserWindow({
       ...(display ? { x: display.x, y: display.y, width: display.width, height: display.height } : {}),
+      title: "Couch UI",
+      icon: path.join(__dirname, "..", "build", "icon.png"),
       fullscreen: true,
       frame: false,
       backgroundColor: "#0b0d12",
@@ -157,7 +200,42 @@ function startApp(): void {
     return !!w && w.isVisible() && !w.isMinimized();
   }
 
-  // ---------- remote state ----------
+  // ---------- what the launcher panel and the phones are told ----------
+  let qrCache: { url: string; dataUrl: string } | null = null;
+
+  async function qrFor(url: string | null): Promise<string | null> {
+    if (!url) return null;
+    if (qrCache?.url === url) return qrCache.dataUrl;
+    try {
+      const dataUrl = await QRCode.toDataURL(url, { margin: 2, width: 320, errorCorrectionLevel: "M" });
+      qrCache = { url, dataUrl };
+      return dataUrl;
+    } catch (err) {
+      console.error("QR generation failed:", err);
+      return null;
+    }
+  }
+
+  async function buildInfo(): Promise<LauncherInfo> {
+    const lan = monitor?.current() ?? getLanInfo();
+    const port = remote?.port ?? null;
+    const url = lan && port ? `http://${lan.ip}:${port}` : null;
+    const m = mdns?.state();
+    return {
+      error: remoteError,
+      url,
+      mdnsUrl: m?.running && port ? `http://${MDNS_HOST}:${port}` : null,
+      qr: await qrFor(url),
+      pairing: remote?.getPairing() ?? { open: false, pin: null, expiresAt: null },
+      devices: remote?.deviceCount() ?? 0,
+      network: { online: !!lan, label: lan?.label ?? null, ip: lan?.ip ?? null },
+    };
+  }
+
+  function pushInfo(): void {
+    void buildInfo().then((info) => alive()?.webContents.send("remote:info", info)).catch((err) => console.error("pushInfo failed:", err));
+  }
+
   function buildState(): StateMessage {
     const p = remote?.getPairing();
     return {
@@ -169,8 +247,45 @@ function startApp(): void {
     };
   }
 
-  function pushPairingToLauncher(p: PairingState): void {
-    alive()?.webContents.send("remote:pairing", p, remote?.deviceCount() ?? 0);
+  // ---------- remote server (can be re-bound after sleep / network trouble) ----------
+  async function startServer(): Promise<void> {
+    const port = configuredPort();
+    try {
+      remote = await startRemoteServer({
+        port,
+        onCommand: handleCommand,
+        deviceStore: deviceStore ?? undefined,
+        getState: buildState,
+        onPairingChange: () => pushInfo(),
+      });
+      remoteError = null;
+      console.log(`Remote server listening on port ${remote.port}`);
+      mdns?.start(remote.port, monitor?.current()?.ip ?? getLanInfo()?.ip ?? null);
+    } catch (err) {
+      remote = null;
+      remoteError = describeStartError(err, port);
+      console.error(remoteError);
+    }
+  }
+
+  async function restartServer(): Promise<void> {
+    const old = remote;
+    remote = null;
+    if (old) await old.close().catch((err) => console.error("closing the old server failed:", err));
+    await startServer();
+  }
+
+  function probeServer(): Promise<boolean> {
+    const port = remote?.port;
+    if (!port) return Promise.resolve(false);
+    return new Promise((resolve) => {
+      const req = http.get({ host: "127.0.0.1", port, path: "/api/session", timeout: 1500, agent: false }, (res) => {
+        res.resume();
+        resolve(true);
+      });
+      req.on("timeout", () => { req.destroy(); resolve(false); });
+      req.on("error", () => resolve(false));
+    });
   }
 
   // ---------- commands from the phone ----------
@@ -216,6 +331,13 @@ function startApp(): void {
         remote?.forgetAllDevices();
         return;
       }
+      case "exit_app": {
+        console.log("Exit requested from the phone");
+        reply({ type: "notice", text: "Exiting the launcher…" });
+        // Give the notice a moment to reach the phone, then quit through the normal clean-shutdown path.
+        setTimeout(() => app.quit(), 250);
+        return;
+      }
       default:
         if (!input) return; // input injection unavailable (non-Windows or koffi failed to load)
         try {
@@ -229,15 +351,7 @@ function startApp(): void {
   // ---------- IPC (launcher renderer) ----------
   // Renderer only gets labels/colors; it launches by id, never by arbitrary target.
   ipcMain.handle("tiles:get", () => loadTiles().map(({ id, label, color }) => ({ id, label, color })));
-
-  ipcMain.handle("remote:info", () => ({
-    error: remoteError,
-    url: remote?.url ?? null,
-    qr: qrDataUrl,
-    pairing: remote?.getPairing() ?? { open: false, pin: null, expiresAt: null },
-    devices: remote?.deviceCount() ?? 0,
-  }));
-
+  ipcMain.handle("remote:info", () => buildInfo());
   ipcMain.on("pairing:open", () => { remote?.openPairing(); });
 
   ipcMain.handle("tiles:launch", async (_e, id: string) => {
@@ -272,9 +386,10 @@ function startApp(): void {
 
   async function init(): Promise<void> {
     Menu.setApplicationMenu(null); // no menu: Alt/Ctrl+W from the phone must never act on the launcher itself
+    app.setAppUserModelId(APP_ID);
 
-    const userData = app.getPath("userData");
     settings = createSettingsStore(path.join(userData, "settings.json"));
+    deviceStore = createFileDeviceStore(path.join(userData, "devices.json"));
 
     power = createPowerGuard({
       start: (t) => powerSaveBlocker.start(t),
@@ -303,21 +418,22 @@ function startApp(): void {
     const startedOnId = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).id;
     const first = resolveDisplay(listDisplays(), { saved: settings.get().display, config: config.display, startedOnId });
 
-    const port = configuredPort();
-    try {
-      remote = await startRemoteServer({
-        port,
-        onCommand: handleCommand,
-        deviceStore: createFileDeviceStore(path.join(userData, "devices.json")),
-        getState: buildState,
-        onPairingChange: pushPairingToLauncher,
-      });
-      console.log(`Remote server listening: ${remote.url ?? "(no LAN address found)"}`);
-      if (remote.url) qrDataUrl = await QRCode.toDataURL(remote.url, { margin: 2, width: 320, errorCorrectionLevel: "M" });
-    } catch (err) {
-      remoteError = describeStartError(err, port);
-      console.error(remoteError);
-    }
+    // Network watching + mDNS + recovery. Everything here lives and dies with this process.
+    mdns = createMdnsAdvertiser({ factory: createBonjourFactory(), log: (m) => console.log(m) });
+    const recovery = createRecovery({
+      readNetwork: () => getLanInfo(),
+      probeServer,
+      restartServer,
+      updateMdns: (ip) => mdns?.update(ip),
+      refreshDisplays: () => manager?.apply(),
+      publish: () => { pushInfo(); remote?.broadcastState(); },
+      log: (m) => console.log(m),
+    });
+    monitor = createNetworkMonitor({ read: getLanInfo, onChange: () => { void recovery.onNetworkChange(); } });
+
+    await startServer();
+    monitor.start();
+    powerMonitor.on("resume", () => { void recovery.onResume(); });
 
     createWindow(first?.display ?? null);
 
@@ -344,15 +460,21 @@ function startApp(): void {
     alive()?.webContents.once("did-finish-load", () => manager?.apply());
   }
 
-  /** Stop everything cleanly and free the port before the process exits. */
+  /** Stop everything cleanly: nothing may be left listening, advertising or holding the screen awake. */
   async function shutdown(): Promise<void> {
+    console.log("Shutting down");
     power?.stop();
+    monitor?.stop();
     manager?.dispose();
+    const tasks: Promise<unknown>[] = [];
+    if (mdns) tasks.push(mdns.stop());
     if (remote) {
       const r = remote;
       remote = null;
-      await Promise.race([r.close(), new Promise<void>((resolve) => setTimeout(resolve, 2000))]);
+      tasks.push(r.close());
     }
+    await Promise.race([Promise.allSettled(tasks), new Promise<void>((resolve) => setTimeout(resolve, 2500))]);
+    console.log("Shutdown complete");
   }
 
   app.on("before-quit", (event) => {
