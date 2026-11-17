@@ -6,6 +6,7 @@
   "private": true,
   "scripts": {
     "build": "tsc",
+    "test": "tsc && node --test dist/test/",
     "start": "tsc && node scripts/run.js",
     "dev": "tsc --watch --preserveWatchOutput"
   },
@@ -17,6 +18,7 @@
     "typescript": "^7.0.2"
   },
   "dependencies": {
+    "koffi": "^3.3.8",
     "qrcode": "^1.5.4",
     "ws": "^8.23.0"
   }

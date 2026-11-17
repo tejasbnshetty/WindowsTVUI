@@ -27,27 +27,103 @@
     </form>
   </main>
 
-  <main id="remote-view" hidden>
-    <div class="dpad">
-      <button class="key up" data-action="up" aria-label="Up">
-        <svg viewBox="0 0 24 24"><path d="M6 15l6-6 6 6"/></svg>
+  <div id="remote-view" class="remote" hidden>
+    <!-- Persistent strip: media + Home, visible in every mode -->
+    <div class="mediabar">
+      <button class="mkey" data-media="vol_down" aria-label="Volume down">
+        <svg viewBox="0 0 24 24"><path class="f" d="M3 9v6h4l5 4V5L7 9z"/><path d="M16 12h5"/></svg>
       </button>
-      <button class="key left" data-action="left" aria-label="Left">
-        <svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg>
+      <button class="mkey" data-media="vol_up" aria-label="Volume up">
+        <svg viewBox="0 0 24 24"><path class="f" d="M3 9v6h4l5 4V5L7 9z"/><path d="M15.5 12h6M18.5 9v6"/></svg>
       </button>
-      <button class="key ok" data-action="ok" aria-label="OK">OK</button>
-      <button class="key right" data-action="right" aria-label="Right">
-        <svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>
+      <button class="mkey" data-media="mute" aria-label="Mute">
+        <svg viewBox="0 0 24 24"><path class="f" d="M3 9v6h4l5 4V5L7 9z"/><path d="M16 9l5 6M21 9l-5 6"/></svg>
       </button>
-      <button class="key down" data-action="down" aria-label="Down">
-        <svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>
+      <button class="mkey" data-media="prev" aria-label="Previous track">
+        <svg viewBox="0 0 24 24"><path class="f" d="M6 6h2v12H6zM20 6v12L9.5 12z"/></svg>
+      </button>
+      <button class="mkey" data-media="play_pause" aria-label="Play or pause">
+        <svg viewBox="0 0 24 24"><path class="f" d="M2 5v14l8-7zM13 5h3v14h-3zM18.5 5h3v14h-3z"/></svg>
+      </button>
+      <button class="mkey" data-media="next" aria-label="Next track">
+        <svg viewBox="0 0 24 24"><path class="f" d="M16 6h2v12h-2zM4 6l10.5 6L4 18z"/></svg>
+      </button>
+      <button class="mkey home" data-action="home" aria-label="Home">
+        <svg viewBox="0 0 24 24"><path class="f" d="M3 11l9-8 9 8v9h-6v-6H9v6H3z"/></svg>
       </button>
     </div>
-    <div class="row">
-      <button class="key wide" data-action="back">Back</button>
-      <button class="key wide" data-action="home">Home</button>
+
+    <div class="modes">
+      <!-- Navigate -->
+      <section id="mode-nav" class="mode">
+        <div class="dpad">
+          <button class="key up" data-action="up" aria-label="Up">
+            <svg viewBox="0 0 24 24"><path d="M6 15l6-6 6 6"/></svg>
+          </button>
+          <button class="key left" data-action="left" aria-label="Left">
+            <svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg>
+          </button>
+          <button class="key ok" data-action="ok" aria-label="OK">OK</button>
+          <button class="key right" data-action="right" aria-label="Right">
+            <svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>
+          </button>
+          <button class="key down" data-action="down" aria-label="Down">
+            <svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>
+          </button>
+        </div>
+        <div class="row">
+          <button class="key wide" data-action="back">Back</button>
+          <button class="key wide" data-action="home">Home</button>
+        </div>
+      </section>
+
+      <!-- Trackpad -->
+      <section id="mode-pad" class="mode" hidden>
+        <div id="pad" class="pad">
+          <span class="pad-hint">Drag to move · tap to click<br>two fingers: tap = right click, drag = scroll<br>tap, then hold &amp; drag = click-drag</span>
+        </div>
+        <div class="clicks">
+          <button class="key wide" id="btn-left">Left click</button>
+          <button class="key wide" id="btn-right">Right click</button>
+        </div>
+        <div class="settings">
+          <label class="setting">Speed
+            <input type="range" id="sens" min="0.5" max="3" step="0.1" value="1.5">
+          </label>
+          <label class="setting check"><input type="checkbox" id="natural" checked> Natural scroll</label>
+        </div>
+      </section>
+
+      <!-- Keyboard -->
+      <section id="mode-kb" class="mode kb" hidden>
+        <input id="kb-input" type="text" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" enterkeyhint="enter" aria-label="Type here to send text to the TV">
+        <p class="kb-hint">Tap the box and type. Characters go straight to the app in front.</p>
+        <div class="quick">
+          <button class="qkey" data-key="Escape">Esc</button>
+          <button class="qkey" data-key="Tab">Tab</button>
+          <button class="qkey" data-key="Backspace">Bksp</button>
+          <button class="qkey" data-key="Enter">Enter</button>
+          <button class="qkey" data-key="ArrowLeft" aria-label="Left arrow">&larr;</button>
+          <button class="qkey" data-key="ArrowUp" aria-label="Up arrow">&uarr;</button>
+          <button class="qkey" data-key="ArrowDown" aria-label="Down arrow">&darr;</button>
+          <button class="qkey" data-key="ArrowRight" aria-label="Right arrow">&rarr;</button>
+          <button class="qkey" data-key="Alt+Left">Page back</button>
+          <button class="qkey" data-key="Alt+Right">Page fwd</button>
+          <button class="qkey" data-key="F5">Refresh</button>
+          <button class="qkey" data-key="Ctrl+W">Close tab</button>
+          <button class="qkey" data-key="Ctrl+T">New tab</button>
+          <button class="qkey" data-key="PageUp">PgUp</button>
+          <button class="qkey" data-key="PageDown">PgDn</button>
+        </div>
+      </section>
     </div>
-  </main>
+
+    <nav class="tabbar">
+      <button class="tab" data-mode="nav">Navigate</button>
+      <button class="tab" data-mode="pad">Trackpad</button>
+      <button class="tab" data-mode="kb">Keyboard</button>
+    </nav>
+  </div>
 
   <script src="/remote.js"></script>
 </body>

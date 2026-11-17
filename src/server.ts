@@ -4,19 +4,17 @@ import * as os from "os";
 import * as path from "path";
 import * as crypto from "crypto";
 import { WebSocketServer, WebSocket } from "ws";
-
-export type NavAction = "up" | "down" | "left" | "right" | "ok" | "back" | "home";
-
-const NAV_ACTIONS: ReadonlySet<string> = new Set<NavAction>([
-  "up", "down", "left", "right", "ok", "back", "home",
-]);
+import { Command, MouseButton, isStreamCommand, parseCommand } from "./protocol";
 
 const MAX_PIN_FAILS = 5;
 const LOCKOUT_MS = 60_000;
 const MAX_BODY_BYTES = 1024;
 const MAX_WS_MESSAGE_BYTES = 1024;
-const MAX_WS_MESSAGES_PER_SEC = 30;
-const HEARTBEAT_MS = 30_000;
+// Per-socket budgets, per second. Cursor/scroll streams are separate from discrete commands.
+const MAX_CONTROL_PER_SEC = 40;
+const MAX_STREAM_PER_SEC = 150;
+// Dead peers (phone asleep / left Wi-Fi) are dropped within ~2 intervals, which releases held buttons.
+const HEARTBEAT_MS = 10_000;
 
 export interface RemoteServer {
   pin: string;
@@ -27,8 +25,10 @@ export interface RemoteServer {
 }
 
 export interface RemoteOptions {
+  /** 0 picks a free port (used by tests). */
   port: number;
-  onNav(action: NavAction): void;
+  /** Called only for validated commands from authenticated sockets. */
+  onCommand(cmd: Command): void;
 }
 
 /** First non-internal IPv4 address (link-local 169.254.x.x skipped). */
@@ -228,36 +228,59 @@ export function startRemoteServer(opts: RemoteOptions): Promise<RemoteServer> {
   });
 
   const alive = new WeakMap<WebSocket, boolean>();
+  // Mouse buttons each socket currently holds down; released if the socket goes away.
+  const held = new Map<WebSocket, Set<MouseButton>>();
 
+  function releaseHeld(ws: WebSocket): void {
+    const buttons = held.get(ws);
+    held.delete(ws);
+    if (!buttons) return;
+    for (const button of buttons) opts.onCommand({ type: "mouse_up", button });
+  }
+
+  // Only reachable via the upgrade handler above, i.e. after token validation.
   wss.on("connection", (ws: WebSocket) => {
     alive.set(ws, true);
+    held.set(ws, new Set());
     ws.on("pong", () => alive.set(ws, true));
     ws.on("error", () => {});
+    ws.on("close", () => releaseHeld(ws));
 
     let windowStart = Date.now();
-    let count = 0;
+    let controlCount = 0;
+    let streamCount = 0;
 
     ws.on("message", (data, isBinary) => {
       if (isBinary) return;
-      const now = Date.now();
-      if (now - windowStart >= 1000) {
-        windowStart = now;
-        count = 0;
-      }
-      if (++count > MAX_WS_MESSAGES_PER_SEC) return;
 
-      let msg: unknown;
+      let cmd: Command | null;
       try {
-        msg = JSON.parse(data.toString("utf8"));
+        cmd = parseCommand(JSON.parse(data.toString("utf8")));
       } catch {
         return;
       }
-      if (typeof msg !== "object" || msg === null) return;
-      const { type, action } = msg as { type?: unknown; action?: unknown };
-      if (type === "nav" && typeof action === "string" && NAV_ACTIONS.has(action)) {
-        opts.onNav(action as NavAction);
+      if (!cmd) return; // unknown type/action or invalid values: ignored
+
+      const now = Date.now();
+      if (now - windowStart >= 1000) {
+        windowStart = now;
+        controlCount = 0;
+        streamCount = 0;
       }
-      // Anything else is ignored.
+      // Releasing a button is never rate-limited, so a flood can't leave one stuck down.
+      if (cmd.type !== "mouse_up") {
+        if (isStreamCommand(cmd)) {
+          if (++streamCount > MAX_STREAM_PER_SEC) return;
+        } else if (++controlCount > MAX_CONTROL_PER_SEC) {
+          return;
+        }
+      }
+
+      const buttons = held.get(ws);
+      if (cmd.type === "mouse_down") buttons?.add(cmd.button);
+      else if (cmd.type === "mouse_up") buttons?.delete(cmd.button);
+
+      opts.onCommand(cmd);
     });
   });
 
@@ -286,14 +309,20 @@ export function startRemoteServer(opts: RemoteOptions): Promise<RemoteServer> {
     server.listen(opts.port, "0.0.0.0", () => {
       server.off("error", reject);
       const ip = getLanIp();
+      const addr = server.address();
+      const port = typeof addr === "object" && addr ? addr.port : opts.port;
       resolve({
         pin,
-        port: opts.port,
-        url: ip ? `http://${ip}:${opts.port}` : null,
+        port,
+        url: ip ? `http://${ip}:${port}` : null,
         close() {
           clearInterval(heartbeat);
           clearInterval(prune);
-          for (const ws of wss.clients) ws.terminate();
+          // Release synchronously: terminate() delivers 'close' asynchronously, too late at app exit.
+          for (const ws of wss.clients) {
+            releaseHeld(ws);
+            ws.terminate();
+          }
           server.close();
         },
       });

@@ -3,7 +3,10 @@ import { spawn } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
 import * as QRCode from "qrcode";
-import { startRemoteServer, RemoteServer, NavAction } from "./server";
+import { startRemoteServer, RemoteServer } from "./server";
+import { Command } from "./protocol";
+import { Input, createInput, createWin32Backend } from "./input";
+import { dispatchInput } from "./dispatch";
 
 interface Tile {
   id: string;
@@ -22,7 +25,8 @@ const DEFAULT_PORT = 8787;
 const configPath = path.join(__dirname, "..", "config.json");
 
 function loadConfig(): Config {
-  return JSON.parse(fs.readFileSync(configPath, "utf8")) as Config;
+  // Windows editors (Notepad, PowerShell) often save UTF-8 with a BOM, which JSON.parse rejects.
+  return JSON.parse(fs.readFileSync(configPath, "utf8").replace(/^﻿/, "")) as Config;
 }
 
 function loadTiles(): Tile[] {
@@ -37,6 +41,7 @@ function configuredPort(): number {
 let win: BrowserWindow | null = null;
 let remote: RemoteServer | null = null;
 let remoteError: string | null = null;
+let input: Input | null = null;
 
 function createWindow(): void {
   win = new BrowserWindow({
@@ -66,10 +71,36 @@ function bringToFront(): void {
   if (!win.isFullScreen()) win.setFullScreen(true);
 }
 
-function handleNav(action: NavAction): void {
+/** Get the launcher out of the way so the app that was just launched is visible and gets input. */
+function stepAside(): void {
   if (!win || win.isDestroyed()) return;
-  if (action === "home" || action === "back") bringToFront();
-  win.webContents.send("remote:nav", action);
+  win.setAlwaysOnTop(false);
+  win.minimize();
+}
+
+function launcherVisible(): boolean {
+  return !!win && !win.isDestroyed() && win.isVisible() && !win.isMinimized();
+}
+
+function handleCommand(cmd: Command): void {
+  if (cmd.type === "nav") {
+    if (!win || win.isDestroyed()) return;
+    if (cmd.action === "home" || cmd.action === "back") {
+      bringToFront();
+    } else if (!launcherVisible()) {
+      // Launcher is hidden behind a launched app: D-pad/OK must not act on it (OK would
+      // re-launch the focused tile). Use Trackpad/Keyboard modes to drive the app instead.
+      return;
+    }
+    win.webContents.send("remote:nav", cmd.action);
+    return;
+  }
+  if (!input) return; // input injection unavailable (non-Windows or koffi failed to load)
+  try {
+    dispatchInput(cmd, input);
+  } catch (err) {
+    console.error("Input injection failed:", err);
+  }
 }
 
 // Renderer only gets labels/colors; it launches by id, never by arbitrary target.
@@ -99,6 +130,7 @@ ipcMain.handle("tiles:launch", async (_e, id: string) => {
       child.on("error", () => {});
       child.unref();
     }
+    stepAside();
     return { ok: true };
   } catch (err) {
     return { ok: false, error: String(err) };
@@ -109,7 +141,12 @@ ipcMain.on("app:quit", () => app.quit());
 
 app.whenReady().then(async () => {
   try {
-    remote = await startRemoteServer({ port: configuredPort(), onNav: handleNav });
+    input = createInput(createWin32Backend());
+  } catch (err) {
+    console.error("Mouse/keyboard control unavailable:", err);
+  }
+  try {
+    remote = await startRemoteServer({ port: configuredPort(), onCommand: handleCommand });
     console.log(`Remote server listening: ${remote.url ?? "(no LAN address found)"}`);
   } catch (err) {
     remoteError = `Remote unavailable: ${(err as Error).message}`;

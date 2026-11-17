@@ -95,6 +95,14 @@ interface Window { tv: TvApi }
 
   window.tv.onNav((action) => { handleAction(action); });
 
+  // The cursor is hidden for TV use, but shown while it's being moved (phone trackpad / mouse).
+  let cursorTimer: number | undefined;
+  window.addEventListener("mousemove", () => {
+    document.documentElement.classList.add("show-cursor");
+    window.clearTimeout(cursorTimer);
+    cursorTimer = window.setTimeout(() => document.documentElement.classList.remove("show-cursor"), 2500);
+  });
+
   // Pairing panel (bottom-right): URL, QR code, PIN.
   const info = await window.tv.getRemoteInfo();
   const urlEl = document.getElementById("pair-url")!;
